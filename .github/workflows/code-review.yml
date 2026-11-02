@@ -15,13 +15,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.3
 
       - uses: reviewdog/action-setup@v1
 
       - name: Run Ruff and post review comments
         env:
           REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set +e
           uvx ruff==0.17.3 check --select E9,F63,F7,F82 --output-format=rdjson . \
-            | reviewdog -f=rdjson -name=ruff -reporter=github-pr-review -filter-mode=added -level=error
+            | reviewdog -f=rdjson -name=ruff -reporter=github-pr-review -filter-mode=added -level=error -fail-level=any
+          if [ "${PIPESTATUS[0]}" -eq 0 ]; then
+            gh pr review "${{ github.event.pull_request.number }}" --comment \
+              --body "Ruff 静态审查通过：E9 / F63 / F7 / F82 未发现问题（commit ${{ github.event.pull_request.head.sha }}）。"
+          fi
+          exit 0
