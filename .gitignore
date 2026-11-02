@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 打包产物（本地打包配置，不发布）
+build.spec
+build/
+dist/
+
+# macOS
+.DS_Store
+
+# 运行时数据（默认落在 ~/Documents/AutoBench，仓库内不保留）
+*.log

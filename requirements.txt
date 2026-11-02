@@ -1,0 +1,7 @@
+# 运行时依赖
+loguru
+pyserial
+PySide6
+PySide6-Fluent-Widgets
+pyvisa
+pyvisa-py
