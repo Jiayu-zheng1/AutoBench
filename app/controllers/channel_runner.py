@@ -92,7 +92,7 @@ class ChannelRunner(BaseTestRunner):
         if self._location_id:
             port = find_port_by_location(self._location_id)
             if port is None:
-                self._log(f"  [{self._channel_id}] ⚠ 未找到 DUT 串口 (location={self._location_id})")
+                self._log(f"  [{self._channel_id}] 未找到 DUT 串口 (location={self._location_id})")
             else:
                 self._log(f"  [{self._channel_id}] DUT 串口: {port}")
             self.test_unit._dut_port = port
@@ -195,7 +195,13 @@ class ChannelRunner(BaseTestRunner):
         )
 
         # 日聚合 CSV
-        csv_report.set_csv_file(final_sn, self._test_values)
+        slot = "".join(ch for ch in self._channel_id if ch.isdigit()) or "1"
+        csv_report.set_csv_file(
+            final_sn,
+            self._test_values,
+            slot=slot,
+            status="PASS" if self._test_status else "FAIL",
+        )
 
         # SFC 上传
         self._upload_sfc()

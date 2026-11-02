@@ -76,7 +76,7 @@ class TestRunner(BaseTestRunner):
 
         # ── 创建单pcs 日志文件夹 ──
         unit_dir = make_unit_folder(scan_sn=self.ScanSN)
-        _unit_handler = begin_unit_log(unit_dir)
+        self._unit_handler = begin_unit_log(unit_dir)
 
         # unit 目录写 records.csv（17列格式）
         unit_records = RecordsCsvWriter(str(unit_dir))
@@ -166,7 +166,12 @@ class TestRunner(BaseTestRunner):
         )
 
         # 总的日聚合 CSV（Test_CSV/YYYYMMDD.csv）
-        csv_report.set_csv_file(final_sn, self._test_values)
+        csv_report.set_csv_file(
+            final_sn,
+            self._test_values,
+            slot="1",
+            status="PASS" if self._test_status else "FAIL",
+        )
 
         self._upload_sfc()
         self.stop()
@@ -210,7 +215,8 @@ class TestRunner(BaseTestRunner):
         self.test_unit.close_dut()
         self.signal_stop.emit()
         self._log_controller.rename_log(self.test_unit.FGSN)
-        end_unit_log(_unit_handler)
+        if getattr(self, "_unit_handler", None) is not None:
+            end_unit_log(self._unit_handler)
 
     def _load_configs(self):
         self.configs = load_test_configs(self._csv_rows)

@@ -20,6 +20,7 @@ DEFAULTS = {
     "dut_baud_rate": 921600,
     "dut_location_id": "",
     "auto_test_mode": False,
+    "auto_connect_instruments": True,   # 启动时自动检测连接仪器
     "fail_stop_test": True,
     "auto_scroll_log": True,
     "sfc_url": "",

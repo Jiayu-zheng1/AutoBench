@@ -1,10 +1,13 @@
 """CSV 处理器 — 日聚合 CsvReport + 单pcs RecordsCsvWriter。"""
 import csv
 import os
+import threading
 import time
 from typing import Any
 
 from app.utils.constants import SITE
+
+_CSV_WRITE_LOCK = threading.Lock()
 
 
 class CsvReport:
@@ -14,7 +17,7 @@ class CsvReport:
                  unit_map: dict = None, output_dir: str = ""):
         self.item = test_items
         self.columns = [
-            'Site', 'Product', 'SerialNumber', 'Station ID',
+            'Site', 'Product', 'SerialNumber', 'Station ID', 'Slot',
             'Test Pass/Fail Status', 'StartTime', 'EndTime', 'Version'
         ] + self.item
         self.header_lines = [
@@ -62,28 +65,71 @@ class CsvReport:
             writer.writerow(row_lower)
             writer.writerow(row_meas)
 
-    def set_csv_file(self, serial: str, value_dict: dict):
-        filepath = self._filepath()
+    def _ensure_schema(self, filepath: str):
+        """旧版 CSV 缺少 Slot 列时补齐，同时保留已有测试项列。"""
         if not os.path.exists(filepath):
-            self.write_csv()
+            return
+        with open(filepath, 'r', newline='') as f:
+            reader = csv.reader(f)
+            old_header = next(reader, [])
+            if old_header == self.columns:
+                return
+            old_rows = list(reader)
 
-        newdata = {
-            'Site': SITE,
-            'Product': '',
-            'SerialNumber': serial,
-            'Station ID': '',
-            'Test Pass/Fail Status': '',
-            'StartTime': time.strftime("%Y-%m-%d %H:%M:%S"),
-            'EndTime': time.strftime("%Y-%m-%d %H:%M:%S"),
-            'Version': '1.0.0',
-        }
-        for key, value in value_dict.items():
-            if key in self.item:
-                newdata[key] = value
+        if old_header:
+            target = list(old_header)
+            if 'Slot' not in target:
+                try:
+                    pos = target.index('Station ID') + 1
+                except ValueError:
+                    pos = min(4, len(target))
+                target.insert(pos, 'Slot')
+            for col in self.columns:
+                if col not in target:
+                    target.append(col)
+        else:
+            target = list(self.columns)
 
-        with open(filepath, 'a+', newline='') as csvfile:
-            writer = csv.DictWriter(csvfile, fieldnames=self.columns)
-            writer.writerow(newdata)
+        with open(filepath, 'w', newline='') as f:
+            writer = csv.DictWriter(
+                f, fieldnames=target, extrasaction='ignore'
+            )
+            writer.writeheader()
+            for raw in old_rows:
+                row = {
+                    key: raw[i] if i < len(raw) else ""
+                    for i, key in enumerate(old_header)
+                }
+                writer.writerow({col: row.get(col, "") for col in target})
+        self.columns = target
+
+    def set_csv_file(self, serial: str, value_dict: dict,
+                     slot: str = "1", status: str = ""):
+        with _CSV_WRITE_LOCK:
+            filepath = self._filepath()
+            if not os.path.exists(filepath):
+                self.write_csv()
+            else:
+                self._ensure_schema(filepath)
+
+            newdata = {
+                'Site': SITE,
+                'Product': '',
+                'SerialNumber': serial,
+                'Station ID': '',
+                'Slot': slot,
+                'Test Pass/Fail Status': status,
+                'StartTime': time.strftime("%Y-%m-%d %H:%M:%S"),
+                'EndTime': time.strftime("%Y-%m-%d %H:%M:%S"),
+                'Version': '1.0.0',
+            }
+            for key, value in value_dict.items():
+                if key in self.item:
+                    newdata[key] = value
+
+            with open(filepath, 'a+', newline='') as csvfile:
+                writer = csv.DictWriter(csvfile, fieldnames=self.columns)
+                writer.writerow(newdata)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
