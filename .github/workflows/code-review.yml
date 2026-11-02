@@ -1,0 +1,27 @@
+name: Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  ruff:
+    name: Ruff static review
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v10
+
+      - uses: reviewdog/action-setup@v1
+
+      - name: Run Ruff and post review comments
+        env:
+          REVIEWDOG_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          uvx ruff==0.17.3 check --select E9,F63,F7,F82 --output-format=rdjson . \
+            | reviewdog -f=rdjson -name=ruff -reporter=github-pr-review -filter-mode=added -level=error
