@@ -166,7 +166,12 @@ class TestRunner(BaseTestRunner):
         )
 
         # 总的日聚合 CSV（Test_CSV/YYYYMMDD.csv）
-        csv_report.set_csv_file(final_sn, self._test_values)
+        csv_report.set_csv_file(
+            final_sn,
+            self._test_values,
+            slot="1",
+            status="PASS" if self._test_status else "FAIL",
+        )
 
         self._upload_sfc()
         self.stop()

@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from qfluentwidgets import (
+    CheckBox,
     ComboBox,
     FluentIcon,
     InfoBar,
@@ -210,7 +211,7 @@ class _InstrConfigRow(QWidget):
 
         name_lbl = QLabel(label)
         name_lbl.setFont(_font(12, bold=True))
-        name_lbl.setFixedWidth(48)
+        name_lbl.setFixedWidth(84)
         name_lbl.setStyleSheet(
             f"color: {Colors.TEXT_PRIMARY}; background: transparent; border: none;"
         )
@@ -303,6 +304,7 @@ class _ChannelConfigCard(QFrame):
         super().__init__(parent)
         self._index = index
         self._instr_rows: dict[str, _InstrConfigRow] = {}
+        self._test_enabled = True
         self._build()
 
     def _build(self):
@@ -320,20 +322,22 @@ class _ChannelConfigCard(QFrame):
         outer.setContentsMargins(14, 10, 14, 10)
         outer.setSpacing(6)
 
-        # ── 标题行 ──
+        # ── 标题行：通道名 + 是否测试 + 状态 + 折叠按钮 ──
         header = QHBoxLayout()
         header.setSpacing(8)
-        self._name_lbl = QLabel(f"🔵 通道 {self._index + 1}")
+        self._name_lbl = QLabel(f"通道 {self._index + 1}")
         self._name_lbl.setFont(_font(14, bold=True))
         self._name_lbl.setStyleSheet(
             f"color: {Colors.TEXT_PRIMARY}; background: transparent; border: none;"
         )
         header.addWidget(self._name_lbl)
+
+        self._test_check = CheckBox("是否测试")
+        self._test_check.setChecked(self._test_enabled)
+        self._test_check.toggled.connect(self._on_test_enabled_changed)
+        header.addWidget(self._test_check)
         header.addStretch()
 
-        self._status_dot = QLabel("⚫")
-        self._status_dot.setFont(_font(10))
-        header.addWidget(self._status_dot)
         self._status_text = QLabel("未配置")
         self._status_text.setFont(_font(11))
         self._status_text.setStyleSheet(
@@ -342,7 +346,13 @@ class _ChannelConfigCard(QFrame):
         header.addWidget(self._status_text)
         outer.addLayout(header)
 
-        # ── DUT Location ID ──
+        # ── 通道配置内容 ──
+        self._body = QWidget()
+        body = QVBoxLayout(self._body)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(6)
+
+        # DUT Location ID
         dut_row = QHBoxLayout()
         dut_row.setSpacing(12)
         dut_label = QLabel("DUT")
@@ -357,13 +367,15 @@ class _ChannelConfigCard(QFrame):
         self._loc_edit.setClearButtonEnabled(True)
         self._loc_edit.setMinimumWidth(180)
         dut_row.addWidget(self._loc_edit, 1)
-        outer.addLayout(dut_row)
+        body.addLayout(dut_row)
 
-        # ── 三台仪器独立配置行 ──
+        # 三台仪器独立配置行
         for key, label, has_mode in _CHANNEL_INSTRUMENTS:
             row = _InstrConfigRow(label, has_mode)
             self._instr_rows[key] = row
-            outer.addWidget(row)
+            body.addWidget(row)
+
+        outer.addWidget(self._body)
 
     # ── 仪器属性访问 ──
 
@@ -408,19 +420,136 @@ class _ChannelConfigCard(QFrame):
     def set_location_id(self, val: str):
         self._loc_edit.setText(val)
 
+    # ── 是否测试 ──
+
+    @property
+    def test_check(self) -> CheckBox:
+        return self._test_check
+
+    def is_test_enabled(self) -> bool:
+        return self._test_enabled
+
+    def set_test_enabled(self, enabled: bool):
+        self._test_check.setChecked(enabled)
+
+    def _on_test_enabled_changed(self, checked: bool):
+        self._test_enabled = checked
+        if checked:
+            self._status_text.setText("未配置")
+        else:
+            self._status_text.setText("不测试")
+        self._status_text.setStyleSheet(
+            f"color: {Colors.TEXT_TERTIARY}; background: transparent; border: none;"
+        )
+
     def set_status(self, connected: bool):
+        if not self._test_enabled:
+            self._status_text.setText("不测试")
+            self._status_text.setStyleSheet(
+                f"color: {Colors.TEXT_TERTIARY}; background: transparent; border: none;"
+            )
+            return
         if connected:
-            self._status_dot.setText("🟢")
             self._status_text.setText("已连接")
             self._status_text.setStyleSheet(
                 f"color: {Colors.SUCCESS}; font-weight: 600; background: transparent; border: none;"
             )
         else:
-            self._status_dot.setText("⚫")
             self._status_text.setText("未连接")
             self._status_text.setStyleSheet(
                 f"color: {Colors.TEXT_TERTIARY}; background: transparent; border: none;"
             )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  多通道设置分组
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class _MultiChannelGroup(QFrame):
+    """多通道设置分组：所有通道配置统一折叠/展开。"""
+
+    def __init__(self, cards: list[_ChannelConfigCard], parent=None):
+        super().__init__(parent)
+        self._cards = cards
+        self._collapsed = False
+        self._build()
+
+    def _build(self):
+        self.setStyleSheet(f"""
+            _MultiChannelGroup {{
+                background-color: white;
+                border: 1px solid #E5E5EA;
+                border-radius: {BORDER_RADIUS}px;
+            }}
+        """)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(14, 10, 14, 10)
+        outer.setSpacing(8)
+
+        header = QHBoxLayout()
+        header.setSpacing(8)
+        title = QLabel("多通道设置")
+        title.setFont(_font(14, bold=True))
+        title.setStyleSheet(
+            f"color: {Colors.TEXT_PRIMARY}; background: transparent; border: none;"
+        )
+        header.addWidget(title)
+
+        self._count_lbl = QLabel("")
+        self._count_lbl.setFont(_font(11))
+        self._count_lbl.setStyleSheet(
+            f"color: {Colors.TEXT_TERTIARY}; background: transparent; border: none;"
+        )
+        header.addWidget(self._count_lbl)
+        header.addStretch()
+
+        self._toggle_btn = QPushButton("展开")
+        self._toggle_btn.setFixedWidth(48)
+        self._toggle_btn.setCursor(Qt.PointingHandCursor)
+        self._toggle_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {Colors.PRIMARY};
+                border: none;
+                font-size: 12px;
+                padding: 0;
+            }}
+            QPushButton:hover {{ color: {Colors.PRIMARY_HOVER}; }}
+        """)
+        self._toggle_btn.clicked.connect(self.toggle_collapsed)
+        header.addWidget(self._toggle_btn)
+        outer.addLayout(header)
+
+        self._body = QWidget()
+        body = QVBoxLayout(self._body)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(8)
+        for card in self._cards:
+            body.addWidget(card)
+        outer.addWidget(self._body)
+
+    def set_channel_count(self, count: int):
+        count = max(0, count)
+        self._count_lbl.setText(f"{count} 个通道")
+        for i, card in enumerate(self._cards):
+            card.setVisible(i < count)
+        self.updateGeometry()
+
+    def toggle_collapsed(self):
+        self.set_collapsed(not self._collapsed)
+
+    def set_collapsed(self, collapsed: bool):
+        self._collapsed = collapsed
+        self._body.setVisible(not collapsed)
+        self._toggle_btn.setText("展开" if collapsed else "收起")
+        self.updateGeometry()
+
+    @property
+    def is_collapsed(self) -> bool:
+        return self._collapsed
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -444,7 +573,6 @@ class _InstrumentRow(QFrame):
         self._port_combo: ComboBox | None = None
         self._addr_input: LineEdit | None = None
         self._connect_btn: PrimaryPushButton | None = None
-        self._dot_lbl: QLabel | None = None
         self._status_lbl: QLabel | None = None
         self._mode_radios: dict = {}
         self._build(display_name)
@@ -516,14 +644,6 @@ class _InstrumentRow(QFrame):
         self._connect_btn.setFixedSize(80, 32)
         self._connect_btn.clicked.connect(self._on_connect)
         row.addWidget(self._connect_btn)
-
-        self._dot_lbl = QLabel("●")
-        self._dot_lbl.setFixedWidth(14)
-        self._dot_lbl.setAlignment(Qt.AlignCenter)
-        self._dot_lbl.setStyleSheet(
-            f"color: {Colors.TEXT_TERTIARY}; background: transparent;"
-        )
-        row.addWidget(self._dot_lbl)
 
         self._status_lbl = QLabel("未连接")
         self._status_lbl.setFixedWidth(50)
@@ -606,18 +726,12 @@ class _InstrumentRow(QFrame):
     def set_status(self, connected: bool, detail: str):
         self._connected = connected
         if connected:
-            self._dot_lbl.setStyleSheet(
-                f"color: {Colors.SUCCESS}; background: transparent;"
-            )
             self._status_lbl.setText("已连接")
             self._status_lbl.setStyleSheet(
                 f"color: {Colors.SUCCESS}; font-weight: 600; background: transparent;"
             )
             self._connect_btn.setText("断开")
         else:
-            self._dot_lbl.setStyleSheet(
-                f"color: {Colors.TEXT_TERTIARY}; background: transparent;"
-            )
             short = detail[:12] if detail else "未连接"
             self._status_lbl.setText(short)
             self._status_lbl.setStyleSheet(
@@ -856,6 +970,16 @@ class SettingsDialog(QDialog):
     def _build_instrument_cards(self):
         self._add_section_header("仪器设置")
 
+        self._auto_connect_card = _SwitchCard(
+            FluentIcon.CONNECT,
+            "自动连接仪器",
+            "启动软件时自动检测并连接三台仪器；关闭后需在下方手动连接",
+        )
+        self._auto_connect_card.switch.setChecked(
+            self._system_config.get("auto_connect_instruments", True)
+        )
+        self._add_card(self._auto_connect_card)
+
         self._dmm_row = _InstrumentRow("34970A", "34970A 数字万用表", ["USB", "GPIB"])
         self._dmm_row.signal_connect.connect(self.signal_reconnect.emit)
         self._dmm_row.signal_disconnect.connect(self.signal_disconnect.emit)
@@ -997,8 +1121,15 @@ class SettingsDialog(QDialog):
         ps_modes = _ch_cfg.get("ps_modes", self._system_config.get("channel_ps_modes", ["", "", "", ""]))
         ps_ports = _ch_cfg.get("ps_ports", self._system_config.get("channel_ps_ports", ["", "", "", ""]))
         relay_ports = _ch_cfg.get("relay_ports", self._system_config.get("channel_relay_ports", ["", "", "", ""]))
+        enabled_flags = _ch_cfg.get(
+            "channels_enabled",
+            self._system_config.get("channel_test_enabled", []),
+        )
         for i in range(8):
             card = _ChannelConfigCard(i)
+            card.set_test_enabled(
+                enabled_flags[i] if i < len(enabled_flags) else True
+            )
             if i < len(channel_ids):
                 card.set_location_id(channel_ids[i])
             if i < len(dmm_modes) and dmm_modes[i]:
@@ -1011,11 +1142,15 @@ class SettingsDialog(QDialog):
                 card.set_instr_port("ps", ps_ports[i])
             if i < len(relay_ports) and relay_ports[i]:
                 card.set_instr_port("relay", relay_ports[i])
-            self._add_card(card)
             self._channel_cards.append(card)
+
+        self._multi_group = _MultiChannelGroup(self._channel_cards)
+        self._add_card(self._multi_group)
 
         # 初始同步可见性
         self._sync_channel_loc_visibility()
+        if self._multi_channel_card.switch.isChecked():
+            self._multi_group.set_collapsed(True)
 
         self._card_layout.addSpacing(20)
 
@@ -1123,17 +1258,19 @@ class SettingsDialog(QDialog):
     # ── 多通道回调 ─────────────────────────────────────────────────
 
     def _on_multi_channel_toggled(self, checked: bool):
+        if checked:
+            self._multi_group.set_collapsed(True)
         self._sync_channel_loc_visibility()
 
     def _on_channel_count_changed(self, text: str):
         self._sync_channel_loc_visibility()
 
     def _sync_channel_loc_visibility(self):
-        """根据 multi_channel_mode 和 channel_count 显示/隐藏通道配置卡片。"""
+        """根据 multi_channel_mode 和 channel_count 显示/隐藏通道配置。"""
         multi = self._multi_channel_card.switch.isChecked()
         count = int(self._channel_count_card.combo.currentText()) if multi else 0
-        for i, card in enumerate(self._channel_cards):
-            card.setVisible(multi and i < count)
+        self._multi_group.setVisible(multi)
+        self._multi_group.set_channel_count(count)
 
     # ── 配置加载/保存 ──────────────────────────────────────────────────
 
@@ -1170,6 +1307,7 @@ class SettingsDialog(QDialog):
         """启用/禁用所有可编辑控件。"""
         self._save_btn.setEnabled(enabled)
         # 仪器行
+        self._auto_connect_card.switch.setEnabled(enabled)
         for row in self._rows.values():
             if row._port_combo:
                 row._port_combo.setEnabled(enabled)
@@ -1192,6 +1330,7 @@ class SettingsDialog(QDialog):
         self._channel_count_card.combo.setEnabled(enabled)
         for card in self._channel_cards:
             card.loc_edit.setEnabled(enabled)
+            card.test_check.setEnabled(enabled)
             for row in card.instr_rows.values():
                 row.set_enabled(enabled)
         # 通用设置
@@ -1244,6 +1383,9 @@ class SettingsDialog(QDialog):
         )
 
         self._system_config["sfc_url"] = self._sfc_url_card.edit.text().strip()
+        self._system_config["auto_connect_instruments"] = (
+            self._auto_connect_card.switch.isChecked()
+        )
         self._system_config["sfc_online"] = self._sfc_online_card.switch.isChecked()
         self._system_config["sfc_vip"] = self._sfc_vip_card.edit.text().strip()
         self._system_config["dut_baud_rate"] = int(self._baud_card.combo.currentText())
@@ -1257,6 +1399,7 @@ class SettingsDialog(QDialog):
         ps_modes = [c.get_instr_mode("ps") for c in self._channel_cards[:8]]
         ps_ports = [c.get_instr_port("ps") for c in self._channel_cards[:8]]
         relay_ports = [c.get_instr_port("relay") for c in self._channel_cards[:8]]
+        enabled_flags = [c.is_test_enabled() for c in self._channel_cards[:8]]
         # 保存到独立 JSON
         save_channel_config({
             "location_ids": loc_ids,
@@ -1265,6 +1408,7 @@ class SettingsDialog(QDialog):
             "ps_modes": ps_modes,
             "ps_ports": ps_ports,
             "relay_ports": relay_ports,
+            "channels_enabled": enabled_flags,
         })
         # 同时保留旧键向后兼容
         self._system_config["channel_location_ids"] = loc_ids
@@ -1273,6 +1417,7 @@ class SettingsDialog(QDialog):
         self._system_config["channel_ps_modes"] = ps_modes
         self._system_config["channel_ps_ports"] = ps_ports
         self._system_config["channel_relay_ports"] = relay_ports
+        self._system_config["channel_test_enabled"] = enabled_flags
         self._system_config["fail_stop_test"] = self._fail_stop_card.switch.isChecked()
         self._system_config["auto_scroll_log"] = (
             self._auto_scroll_card.switch.isChecked()
@@ -1318,6 +1463,9 @@ class SettingsDialog(QDialog):
             self._sidebar_btns[first].set_active(True)
         # 从 InstrumentManager 同步当前仪器状态（Dialog 懒创建，之前的信号已丢失）
         self._sync_instrument_status()
+        # 多通道开启时，每次打开设置页都折叠多通道设置
+        if self._multi_channel_card.switch.isChecked():
+            self._multi_group.set_collapsed(True)
         # 快照当前配置，用于保存时对比是否有变更
         self._original_config = dict(self._system_config)
 

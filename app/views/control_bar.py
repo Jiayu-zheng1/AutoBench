@@ -86,9 +86,9 @@ class ControlBar(QWidget):
         layout.addStretch()
 
         # SN Label
-        sn_label = QLabel("SN:")
-        sn_label.setFont(self._font(*FONT_BODY))
-        layout.addWidget(sn_label)
+        self.sn_label = QLabel("SN:")
+        self.sn_label.setFont(self._font(*FONT_BODY))
+        layout.addWidget(self.sn_label)
 
         # SN Input
         self.sn_input = QLineEdit()
@@ -140,9 +140,10 @@ class ControlBar(QWidget):
 
         # Separator
         sep = QFrame()
-        sep.setFrameShape(QFrame.VLine)
-        sep.setStyleSheet(f"color: {Colors.SEPARATOR};")
-        layout.addWidget(sep)
+        sep.setFrameShape(QFrame.NoFrame)
+        sep.setFixedSize(1, 22)
+        sep.setStyleSheet(f"background-color: {Colors.SEPARATOR}; border: none;")
+        layout.addWidget(sep, 0, Qt.AlignVCenter)
 
         # Timer
         timer_label = QLabel("Time:")
@@ -155,9 +156,9 @@ class ControlBar(QWidget):
         self.time_display.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.time_display)
 
-        # Gear button
-        self.gear_btn = QPushButton("⚙")
-        self.gear_btn.setFixedSize(36, 36)
+        # Settings button
+        self.gear_btn = QPushButton("设置")
+        self.gear_btn.setFixedSize(56, 36)
         self.gear_btn.setFont(self._font(*FONT_BODY))
         self.gear_btn.setCursor(Qt.PointingHandCursor)
         self.gear_btn.setToolTip("仪器设置")
@@ -167,7 +168,7 @@ class ControlBar(QWidget):
                 color: {Colors.TEXT_SECONDARY};
                 border: 1px solid {Colors.BORDER};
                 border-radius: {BORDER_RADIUS}px;
-                font-size: 18px;
+                font-size: 13px;
                 padding: 0;
             }}
             QPushButton:hover {{
@@ -202,6 +203,11 @@ class ControlBar(QWidget):
             self.sn_input.setEnabled(True)
             self.sn_input.setPlaceholderText("Scan Serial Number")
             self.start_btn.setEnabled(True)
+
+    def set_multi_mode(self, multi: bool):
+        """多通道模式下 SN 扫描移到各通道卡片，隐藏顶栏 SN 输入。"""
+        self.sn_label.setVisible(not multi)
+        self.sn_input.setVisible(not multi)
 
     def set_dut_status(self, connected: bool):
         """更新 DUT 连接状态圆点。"""

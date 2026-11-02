@@ -52,7 +52,7 @@ python main.py
 ### 首次使用
 
 1. 连好仪器后**重启软件**，等待仪器自动检测完成
-2. 顶栏圆点变绿表示仪器就绪：●34970A ●IT6382 ●Relay ●DUT
+2. 顶栏状态圆点变绿表示就绪：●34970A ●IT6382 ●Relay ●DUT
 3. 输入 SN → 点 **Start** 或按回车开始测试
 
 ## 特性
@@ -291,6 +291,7 @@ config 字段一览：
 | `dut_baud_rate` | 921600 | DUT 串口波特率 |
 | `dut_location_id` | `""` | DUT USB Location ID（单通道模式） |
 | `auto_test_mode` | false | 自动测试模式，监控 DUT 插拔即测 |
+| `auto_connect_instruments` | true | 启动时自动检测并连接仪器；关闭后需手动连接 |
 | `fail_stop_test` | true | 测试项失败后停止后续测试 |
 | `auto_scroll_log` | true | 日志面板自动滚动 |
 | `sfc_url` | `""` | SFC 服务器 URL |
@@ -298,16 +299,17 @@ config 字段一览：
 | `sfc_vip` | `""` | SFC 终端 IP 地址 |
 | `multi_channel_mode` | false | 启用多通道测试模式 |
 | `channel_count` | 4 | 通道数量（1–8） |
+| `channel_test_enabled` | `[true,…]` | 每通道是否参与测试（也可在 channel_config.json 的 `channels_enabled` 中配置） |
 | `channel_location_ids` | `["","","",""]` | 每通道的 DUT Location ID |
 
 ## 使用说明
 
 ### 基本操作
 
-1. **连接仪器** — 启动软件后仪器自动检测，顶栏圆点 ●34970A / ●IT6382 / ●Relay / ●DUT 变绿表示连接成功
-2. **设置** — 点击 ⚙ 齿轮图标进入设置页，输入密码 `123` 解锁编辑
+1. **连接仪器** — 默认启动软件后自动检测仪器，顶栏状态圆点 ●34970A / ●IT6382 / ●Relay / ●DUT 变绿表示连接成功；设置页 → 仪器设置可关闭“自动连接仪器”，关闭后需在下方逐台手动连接
+2. **设置** — 点击“设置”按钮进入设置页，输入密码 `123` 解锁编辑
 3. **单通道测试** — 关闭多通道模式，输入 SN → 点 **Start**
-4. **多通道测试** — 设置页 → 串口设置 → 开启多通道测试模式 → 配置通道数量 + 每通道 Location ID + 绑定仪器 → 保存重启 → 各通道 Tab 独立操作
+4. **多通道测试** — 设置页 → 串口设置 → 开启多通道测试模式 → 配置通道数量（通道 1-N 收纳在“多通道设置”分组中，整组折叠/展开）+ 各通道 Location ID/仪器，逐通道勾选“是否测试”→ 保存重启 → 在主页各通道卡片输入 SN 后点全局 Start
 
 ### 手动模式
 
@@ -324,12 +326,10 @@ config 字段一览：
 
 ### 多通道测试
 
-1. **配置**：设置页 → 串口设置 → 开启"多通道测试模式" → 选择通道数量 → 每个通道填入 Location ID + 配置仪器端口 → 保存并重启
+1. **配置**：设置页 → 串口设置 → 开启"多通道测试模式" → 选择通道数量（通道 1-N 统一收纳在“多通道设置”分组，默认折叠）→ 展开分组后为每个通道填入 Location ID + 配置仪器端口 + 勾选“是否测试”（未勾选通道主页仍显示，但不参与测试）→ 保存并重启
 2. **查看 DUT**：点击"可用 DUT 设备"查看当前连接的 DUT 及 Location ID
-3. **测试**：
-   - 切换到各通道 Tab → 输入 SN → 点 **Start**（各通道独立启动）
-   - 或点顶栏 **全局 Start** 同时启动所有通道
-4. **查看汇总**：Summary Tab 显示各通道 PASS/FAIL 计数和 Yield
+3. **测试**：在主页各通道卡片内扫描/输入 SN → 点 **全局 Start** 同时启动所有已勾选通道；各通道 Tab 仅显示结果和日志，不再单独提供 SN 和 Start；通道测试完成后该卡片 SN 自动清空，便于扫描下一颗
+4. **查看汇总**：Summary Tab 每个通道卡片显示独立的 SN 输入、状态和 Input / Pass / Fail 计数（按整次测试单元统计，多次 Start 连续累计），未勾选通道显示“不测试”
 
 ### 检查 DUT Location ID
 
@@ -373,7 +373,7 @@ pyinstaller --windowed --name AutoBench --add-data "resources:resources" main.py
 ## 维护
 
 - **日志查看**：`~/Documents/AutoBench/TopLevelLog/`，历史按日期归档
-- **CSV 报表**：`~/Documents/AutoBench/Test_CSV/`
+- **CSV 报表**：`~/Documents/AutoBench/Test_CSV/`；日聚合 CSV 含 `Slot` 列（单通道固定 1，多通道为通道号）和 `Test Pass/Fail Status`（PASS/FAIL）
 - **修改测试项**：编辑 `resources/Main.csv` + `resources/Limits.csv`
 - **新增测试项**：在两张 CSV 中增加行，SubTestName 对应即可，无需改代码
 - **修改仪器端口**：设置页中修改或直接编辑 `~/Documents/AutoBench/instrument_config.json`
