@@ -15,16 +15,18 @@ from PySide6.QtWidgets import (
 )
 
 from app.controllers.channel_runner import ChannelRunner
-from app.controllers.dut_monitor import DutMonitor
+from app.controllers.dut_monitor import create_dut_monitor
 from app.controllers.instrument_manager import InstrumentManager
 from app.controllers.log_controller import LogController
-from app.controllers.multi_channel_monitor import MultiChannelDutMonitor
+from app.controllers.multi_channel_monitor import create_multi_channel_monitor
 from app.controllers.test_runner import TestRunner
-from app.models.instruments.keysight_34970a import KEYSIGHT_34970A
-from app.models.instruments.ps_it6382 import IT6382
-from app.models.instruments.relay_board import RELAYBOARD
 from app.models.test_plan import TestPlan
-from app.utils.config import load_channel_config, load_config
+from app.utils.config import (
+    PLATFORM_WINDOWS,
+    get_platform_mode,
+    load_channel_config,
+    load_config,
+)
 from app.utils.constants import APP_NAME
 from app.utils.limits_loader import LimitsLoader
 from app.views.about_dialog import AboutDialog
@@ -49,11 +51,16 @@ class MainWindow(QMainWindow):
         self._runner: TestRunner | None = None
         self._runners: list[ChannelRunner] = []  # 多通道 runners
         self._multi_testing_channels: set[str] = set()  # 正在测试的通道
+        self._batch_channels: set[str] = set()  # 本轮启动的通道
         self._log_ctrl = LogController()
         self._testing = False
 
         self._instr_mgr = InstrumentManager.instance()
         self._instr_dialog: SettingsDialog | None = None
+        self._slot_ports: dict[str, str] = {}
+        self._runner_by_channel: dict[str, ChannelRunner] = {}
+        self._single_dut_port: str | None = None
+        self._platform = get_platform_mode()
 
         # 从配置读取
         cfg = load_config()
@@ -61,12 +68,18 @@ class MainWindow(QMainWindow):
         self._multi_mode = cfg.get("multi_channel_mode", False)
 
         # DUT 监控线程 — 用 ioreg + location_id 检测串口（单通道模式用）
-        self._dut_monitor = DutMonitor(location_id=loc)
+        self._dut_monitor = create_dut_monitor(
+            location_id=loc,
+            platform=self._platform,
+            interface=cfg.get("dut_interface", ""),
+            vid=cfg.get("dut_vid", ""),
+            pid=cfg.get("dut_pid", ""),
+        )
         self._dut_monitor.dut_detected.connect(self._on_dut_detected)
         self._dut_monitor.dut_lost.connect(self._on_dut_lost)
 
         # 多通道 DUT 监控 — 每个通道独立监控其 location_id
-        self._multi_monitor: MultiChannelDutMonitor | None = None
+        self._multi_monitor = None
         self._channel_flags: list[bool] = []
 
         self.setWindowTitle(APP_NAME)
@@ -304,7 +317,6 @@ class MainWindow(QMainWindow):
         sn = self.control_bar.sn_input.text().strip()
 
         self._testing = True
-        self._dut_monitor.pause()
         self.control_bar.set_running(True)
         self.status_header.set_running()
         self.test_table.clear_results()
@@ -315,6 +327,8 @@ class MainWindow(QMainWindow):
             self._test_plan.steps, self._log_ctrl, instrument_manager=self._instr_mgr
         )
         self._runner.ScanSN = sn
+        if self._single_dut_port:
+            self._runner.test_unit._dut_port = self._single_dut_port
         self._runner.signal_value.connect(self.test_table.set_value)
         self._runner.signal_result.connect(self.test_table.set_result)
         self._runner.signal_color.connect(self.test_table.set_result_color)
@@ -362,6 +376,7 @@ class MainWindow(QMainWindow):
 
     def _on_dut_detected(self, device: str):
         """DUT 串口检测到 → 状态灯亮绿，自动模式才触发测试。"""
+        self._single_dut_port = device
         self.control_bar.set_dut_status(True)
         self.log_panel.append_log(f"DUT 已连接: {device}")
         cfg = load_config()
@@ -369,9 +384,13 @@ class MainWindow(QMainWindow):
             self._start_test()
 
     def _on_dut_lost(self):
-        """DUT 串口断开 → 状态灯灭。"""
+        """DUT 串口断开 → 中止测试并判定 Fail。"""
+        self._single_dut_port = None
         self.control_bar.set_dut_status(False)
         self.log_panel.append_log("DUT 已断开")
+        if self._runner and self._runner.isRunning():
+            self._runner.abort()
+            self.log_panel.append_log("DUT 已拔出，中止测试并判定 Fail")
 
     # ── 多通道 DUT 监控 ──────────────────────────────────────────────
 
@@ -382,24 +401,37 @@ class MainWindow(QMainWindow):
         channel_loc_map: dict[str, str] = {}
         cfg = load_config()
         channel_count = cfg.get("channel_count", 4)
-        for i in range(channel_count):
-            ch = f"CH{i + 1}"
-            loc = loc_ids[i] if i < len(loc_ids) else ""
-            if loc:
-                channel_loc_map[ch] = loc
+        if self._platform == PLATFORM_WINDOWS:
+            # Windows 使用 Location path（如 1-3.4）匹配 Slot；留空则按 Hub 端口尾号
+            for i in range(channel_count):
+                ch = f"CH{i + 1}"
+                channel_loc_map[ch] = loc_ids[i] if i < len(loc_ids) else ""
+        else:
+            for i in range(channel_count):
+                ch = f"CH{i + 1}"
+                loc = loc_ids[i] if i < len(loc_ids) else ""
+                if loc:
+                    channel_loc_map[ch] = loc
 
         if self._multi_monitor:
             self._multi_monitor.stop_monitor()
             self._multi_monitor.channel_dut_detected.disconnect()
             self._multi_monitor.channel_dut_lost.disconnect()
 
-        self._multi_monitor = MultiChannelDutMonitor(channel_loc_map)
+        self._multi_monitor = create_multi_channel_monitor(
+            channel_loc_map,
+            platform=self._platform,
+            interface=cfg.get("dut_interface", ""),
+            vid=cfg.get("dut_vid", ""),
+            pid=cfg.get("dut_pid", ""),
+        )
         self._multi_monitor.channel_dut_detected.connect(self._on_channel_dut_detected)
         self._multi_monitor.channel_dut_lost.connect(self._on_channel_dut_lost)
         self._multi_monitor.start()
 
     def _on_channel_dut_detected(self, channel_id: str, device: str):
         """多通道模式下某通道 DUT 检测到 → 自动模式触发测试。"""
+        self._slot_ports[channel_id] = device
         ct = self._channel_tabs.get(channel_id)
         if ct:
             ct.append_log(f"DUT 已连接: {device}")
@@ -415,6 +447,11 @@ class MainWindow(QMainWindow):
 
     def _on_channel_dut_lost(self, channel_id: str):
         """多通道模式下某通道 DUT 断开。"""
+        self._slot_ports.pop(channel_id, None)
+        runner = self._runner_by_channel.get(channel_id)
+        if runner and runner.isRunning():
+            runner.abort()
+            self.log_panel.append_log(f"[{channel_id}] DUT 已拔出，中止测试并判定 Fail")
         ct = self._channel_tabs.get(channel_id)
         if ct:
             ct.append_log("DUT 已断开")
@@ -528,11 +565,16 @@ class MainWindow(QMainWindow):
         enabled_channels = {
             f"CH{i + 1}" for i in range(channel_count) if flags[i]
         }
+        if self._platform == PLATFORM_WINDOWS:
+            # Windows 必须由 Slot 监控给出明确 COM 口，避免多个通道抢占同一串口
+            enabled_channels = {
+                ch for ch in enabled_channels if self._slot_ports.get(ch)
+            }
 
         if only_channel:
             if only_channel not in enabled_channels:
                 self.log_panel.append_log(
-                    f"{only_channel} 未勾选“是否测试”，已跳过"
+                    f"{only_channel} 未勾选或未检测到 DUT，已跳过"
                 )
                 return
             ct = self._channel_tabs.get(only_channel)
@@ -543,10 +585,14 @@ class MainWindow(QMainWindow):
                 if card:
                     card.set_running()
             self.log_panel.append_log(f"{only_channel} 手动启动…")
+            self._batch_channels.add(only_channel)
         else:
             if not enabled_channels:
-                self.log_panel.append_log("没有勾选“是否测试”的通道，已取消启动")
+                self.log_panel.append_log(
+                    "没有可启动的通道（需勾选且已检测到 DUT），已取消启动"
+                )
                 return
+            self._batch_channels = set(enabled_channels)
             self.control_bar.set_running(True)
             self.status_header.reset()
             self.control_bar.start_timer()
@@ -564,11 +610,6 @@ class MainWindow(QMainWindow):
         loc_ids = ch_cfg.get(
             "location_ids", cfg.get("channel_location_ids", ["", "", "", ""])
         )
-        dmm_modes = ch_cfg.get("dmm_modes", ["", "", "", ""])
-        dmm_ports = ch_cfg.get("dmm_ports", ["", "", "", ""])
-        ps_modes = ch_cfg.get("ps_modes", ["", "", "", ""])
-        ps_ports = ch_cfg.get("ps_ports", ["", "", "", ""])
-        relay_ports = ch_cfg.get("relay_ports", ["", "", "", ""])
         fail_stop = cfg.get("fail_stop_test", True)
 
         for i in range(channel_count):
@@ -576,6 +617,10 @@ class MainWindow(QMainWindow):
 
             # 未勾选“是否测试” → 仅展示，不参与测试
             if not flags[i]:
+                continue
+
+            # Windows 未检测到 Slot 串口或未勾选 → 跳过
+            if ch not in enabled_channels:
                 continue
 
             # only_channel 模式：只启动指定通道
@@ -599,60 +644,13 @@ class MainWindow(QMainWindow):
 
             loc_id = loc_ids[i] if i < len(loc_ids) else ""
 
-            # ── 按通道创建独立仪器实例 ──
-            dmm = ps = relay = None
-            _dp = dmm_ports[i] if i < len(dmm_ports) else ""
-            if _dp:
-                dmm = KEYSIGHT_34970A(gpipID=9, serial_port=_dp)
-                try:
-                    if dmm.connect():
-                        dmm.set_DMMcls()
-                        self.log_panel.append_log(
-                            f"  [{ch}] 34970A 连接成功 ({dmm_modes[i] if i < len(dmm_modes) else 'usb'}:{_dp})"
-                        )
-                    else:
-                        self.log_panel.append_log(f"  [{ch}] 34970A 连接失败")
-                except Exception as e:
-                    self.log_panel.append_log(f"  [{ch}] 34970A 连接异常: {e}")
-
-            _pp = ps_ports[i] if i < len(ps_ports) else ""
-            if _pp:
-                _pm = ps_modes[i] if i < len(ps_modes) else "gpib"
-                gpibid = _pp if _pm == "gpib" else ""
-                ps = IT6382(gpibid) if gpibid else IT6382("")
-                try:
-                    if ps.connect():
-                        self.log_panel.append_log(
-                            f"  [{ch}] IT6382 连接成功 ({_pm}:{_pp})"
-                        )
-                    else:
-                        self.log_panel.append_log(f"  [{ch}] IT6382 连接失败")
-                except Exception as e:
-                    self.log_panel.append_log(f"  [{ch}] IT6382 连接异常: {e}")
-
-            _rp = relay_ports[i] if i < len(relay_ports) else ""
-            if _rp:
-                relay = RELAYBOARD("0", _rp)
-                try:
-                    if relay.connect():
-                        relay.turn_off_relays(range(1, 9))
-                        self.log_panel.append_log(
-                            f"  [{ch}] Relayboard 连接成功 ({_rp})"
-                        )
-                    else:
-                        self.log_panel.append_log(f"  [{ch}] Relayboard 连接失败")
-                except Exception as e:
-                    self.log_panel.append_log(f"  [{ch}] Relayboard 连接异常: {e}")
-
             runner = ChannelRunner(
                 channel_id=ch,
                 csv_rows=self._test_plan.steps,
                 location_id=loc_id,
                 sn=sn,
                 fail_stop=fail_stop,
-                dmm=dmm,
-                ps=ps,
-                relay=relay,
+                dut_port=self._slot_ports.get(ch),
             )
             runner.signal_value.connect(self._on_channel_value)
             runner.signal_result.connect(self._on_channel_result)
@@ -661,6 +659,7 @@ class MainWindow(QMainWindow):
             runner.signal_log.connect(self._on_channel_log)
             runner.signal_display.connect(self._on_channel_display)
             self._runners.append(runner)
+            self._runner_by_channel[ch] = runner
             self._multi_testing_channels.add(ch)
             runner.start()
 
@@ -686,6 +685,7 @@ class MainWindow(QMainWindow):
 
     def _on_channel_done(self, ch: str, overall_pass: bool):
         self._multi_testing_channels.discard(ch)
+        self._runner_by_channel.pop(ch, None)
         card = self._summary_tab.get_card(ch) if self._summary_tab else None
         if card:
             card.set_finished(overall_pass)
@@ -704,17 +704,23 @@ class MainWindow(QMainWindow):
         self.control_bar.stop_timer()
         self.control_bar.set_running(False)
         self._dut_monitor.resume()
-        # 汇总最终结果（未勾选“是否测试”的通道不参与判定）
+        # 汇总最终结果（只统计本轮实际启动的通道）
         if self._summary_tab:
             flags = self._channel_enabled_flags()
+            channels = (
+                self._batch_channels
+                if self._batch_channels
+                else {
+                    f"CH{i + 1}" for i, flag in enumerate(flags) if flag
+                }
+            )
             any_fail = False
-            for i, flag in enumerate(flags):
-                if not flag:
-                    continue
-                card = self._summary_tab.get_card(f"CH{i + 1}")
+            for ch in channels:
+                card = self._summary_tab.get_card(ch)
                 if card and (not card._finished or not card._overall_pass):
                     any_fail = True
                     break
+            self._batch_channels.clear()
             if any_fail:
                 self.status_header.set_fail()
             else:

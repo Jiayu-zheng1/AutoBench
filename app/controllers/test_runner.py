@@ -14,6 +14,7 @@ from app.utils.logger import (
 
 logger = get_logger("TestRunner")
 from app.controllers.base_runner import BaseTestRunner
+from app.models.device import DutDisconnected
 from app.models.sfc_connector import SFCConnector
 from app.models.test_config import TestConfig, load_test_configs
 from app.models.test_item import TestItem
@@ -91,6 +92,10 @@ class TestRunner(BaseTestRunner):
         self._test_values: dict[str, str] = {}
 
         for cfg in self.configs:
+            if self._aborted():
+                self._test_status = False
+                logger.info("DUT 已拔出，中止测试并跳过后续测试项")
+                break
             display = cfg.sub_test_name
             method = cfg.function
             step_passed = True
@@ -117,6 +122,10 @@ class TestRunner(BaseTestRunner):
                     self.signal_color.emit(display, "Fail")
                     self._test_status = False
 
+            except DutDisconnected:
+                self._test_status = False
+                logger.info("DUT 串口已断开，中止测试并判定 Fail")
+                break
             except Exception as e:
                 logger.info(f"Error running test item {cfg.sub_test_name}: {e}")
                 self._test_values[cfg.sub_test_name] = "Error"
@@ -144,6 +153,11 @@ class TestRunner(BaseTestRunner):
 
             if self._fail_stop and not self._test_status:
                 logger.info("Fail-stop 已启用，停止后续测试")
+                break
+
+            if self._aborted():
+                self._test_status = False
+                logger.info("DUT 已拔出，中止测试并跳过后续测试项")
                 break
 
             if self.test_unit.FGSN:

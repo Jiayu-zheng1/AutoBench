@@ -1,6 +1,7 @@
 """Application-wide constants."""
 
 import os
+import sys
 
 APP_NAME = "AutoBench"
 APP_VERSION = "1.0.1"
@@ -12,7 +13,11 @@ MAIN_CSV = os.path.join(RESOURCE_DIR, "Main.csv")
 LIMITS_CSV = os.path.join(RESOURCE_DIR, "Limits.csv")
 
 CSV_DIR = os.path.expanduser("~/Documents/AutoBench/Test_CSV")
-CONFIG_DIR = os.path.expanduser("~/Documents/AutoBench")
+if sys.platform.startswith("win"):
+    _APPDATA = os.environ.get("APPDATA") or os.path.expanduser("~/AppData/Roaming")
+    CONFIG_DIR = os.path.join(_APPDATA, APP_NAME)
+else:
+    CONFIG_DIR = os.path.expanduser("~/Documents/AutoBench")
 INSTRUMENT_CONFIG_PATH = os.path.join(CONFIG_DIR, "instrument_config.json")
 CHANNEL_CONFIG_PATH = os.path.join(CONFIG_DIR, "channel_config.json")
 

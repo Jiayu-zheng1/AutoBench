@@ -1,0 +1,32 @@
+[project]
+name = "autobench"
+version = "1.0.1"
+description = "AutoBench serial test automation desktop tool"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "loguru>=0.7.3",
+    "pyserial>=3.5",
+    "PySide6>=6.7",
+    "PySide6-Fluent-Widgets>=1.11.3",
+    "pyvisa>=1.14",
+    "pyvisa-py>=0.8",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.3",
+    "pyinstaller>=6.10",
+]
+
+[tool.uv]
+# 本目录是应用工程，不构建/安装为 Python 包；uv sync 只管理依赖环境
+package = false
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+# 只启用高信号规则，避免现有代码产生大量风格噪音
+select = ["E9", "F63", "F7", "F82"]
