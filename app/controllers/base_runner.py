@@ -5,6 +5,8 @@
     ChannelRunner — 多通道，通道日志/串口定位
 """
 
+import threading
+
 from PySide6.QtCore import QThread
 
 from app.utils.logger import get_logger
@@ -28,6 +30,17 @@ class BaseTestRunner(QThread):
     """
 
     # ── 子类必须实现 ──
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._abort_event = threading.Event()
+
+    def abort(self):
+        """请求中止当前测试（DUT 拔出等），当前项结束后不再执行后续项。"""
+        self._abort_event.set()
+
+    def _aborted(self) -> bool:
+        return self._abort_event.is_set()
 
     def _emit_value(self, test_item: str, value: str):
         raise NotImplementedError

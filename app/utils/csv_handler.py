@@ -1,11 +1,13 @@
 """CSV 处理器 — 日聚合 CsvReport + 单pcs RecordsCsvWriter。"""
 import csv
 import os
+import tempfile
 import threading
 import time
 from typing import Any
 
 from app.utils.constants import SITE
+from app.utils.paths import csv_dir
 
 _CSV_WRITE_LOCK = threading.Lock()
 
@@ -30,9 +32,9 @@ class CsvReport:
         self.upper_limit = upper_limit
         self.lower_limit = lower_limit
         self.unit_map = unit_map or {}
-        self.output_dir = output_dir  # 输出目录，为空则走旧路径
-        # 旧路径（兜底）
-        self.path = os.path.expanduser('~/Documents/AutoBench/Test_CSV')
+        self.output_dir = output_dir  # 输出目录，为空则使用设置里的数据保存路径
+        # 旧路径（兜底）改为可配置目录
+        self.path = str(csv_dir(create=False))
 
     def _filepath(self) -> str:
         """确定 CSV 文件路径。
@@ -90,18 +92,32 @@ class CsvReport:
         else:
             target = list(self.columns)
 
-        with open(filepath, 'w', newline='') as f:
-            writer = csv.DictWriter(
-                f, fieldnames=target, extrasaction='ignore'
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(
+                prefix=".autobench-", suffix=".csv",
+                dir=os.path.dirname(filepath) or ".",
             )
-            writer.writeheader()
-            for raw in old_rows:
-                row = {
-                    key: raw[i] if i < len(raw) else ""
-                    for i, key in enumerate(old_header)
-                }
-                writer.writerow({col: row.get(col, "") for col in target})
-        self.columns = target
+            with os.fdopen(fd, 'w', newline='') as f:
+                writer = csv.DictWriter(
+                    f, fieldnames=target, extrasaction='ignore'
+                )
+                writer.writeheader()
+                for raw in old_rows:
+                    row = {
+                        key: raw[i] if i < len(raw) else ""
+                        for i, key in enumerate(old_header)
+                    }
+                    writer.writerow({col: row.get(col, "") for col in target})
+            os.replace(tmp_path, filepath)
+            tmp_path = None
+            self.columns = target
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
     def set_csv_file(self, serial: str, value_dict: dict,
                      slot: str = "1", status: str = ""):

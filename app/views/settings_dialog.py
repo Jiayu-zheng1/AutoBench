@@ -6,12 +6,14 @@ import serial.tools.list_ports
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -32,12 +34,17 @@ from qfluentwidgets import (
 )
 
 from app.utils.config import (
+    PLATFORM_MACOS,
+    PLATFORM_WINDOWS,
+    get_platform_mode,
     load_channel_config,
     load_config,
     save_channel_config,
     save_config,
+    set_platform_mode,
 )
 from app.utils.logger import get_logger
+from app.utils.paths import output_base
 from app.views.theme import BORDER_RADIUS, FONT_FAMILY, Colors
 
 logger = get_logger("Settings")
@@ -180,130 +187,14 @@ class _LineEditCard(_SettingCard):
 #  多通道配置卡片
 # ═══════════════════════════════════════════════════════════════════════════
 
-INSTRUMENT_OPTIONS = ["无仪器", "34970A", "IT6382", "Relayboard"]
-
-
-INSTRUMENT_MULTI_MODE = {"34970A", "IT6382"}  # 支持 USB + GPIB 双模式的仪器
-
-# 通道仪器定义：(键名, 显示名, 是否支持双模式)
-_CHANNEL_INSTRUMENTS = [
-    ("dmm", "34970A", True),
-    ("ps",  "IT6382", True),
-    ("relay", "Relayboard", False),
-]
-
-
-class _InstrConfigRow(QWidget):
-    """单台仪器的连接配置行：模式 Radio + USB ComboBox / GPIB 地址输入。"""
-
-    def __init__(self, label: str, has_mode: bool, parent=None):
-        super().__init__(parent)
-        self._has_mode = has_mode
-        self._mode_radios: dict = {}
-        self._port_combo: ComboBox | None = None
-        self._addr_edit: LineEdit | None = None
-        self._build(label)
-
-    def _build(self, label: str):
-        row = QHBoxLayout(self)
-        row.setContentsMargins(0, 2, 0, 2)
-        row.setSpacing(6)
-
-        name_lbl = QLabel(label)
-        name_lbl.setFont(_font(12, bold=True))
-        name_lbl.setFixedWidth(84)
-        name_lbl.setStyleSheet(
-            f"color: {Colors.TEXT_PRIMARY}; background: transparent; border: none;"
-        )
-        row.addWidget(name_lbl)
-
-        if self._has_mode:
-            from qfluentwidgets import RadioButton
-            for pt in ["USB", "GPIB"]:
-                rb = RadioButton(pt)
-                rb.setChecked(pt == "USB")
-                rb.toggled.connect(self._on_mode_changed)
-                row.addWidget(rb)
-                self._mode_radios[pt] = rb
-
-        self._port_combo = ComboBox()
-        self._port_combo.setMinimumWidth(180)
-        self._port_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        ports = _list_serial_ports()
-        if ports:
-            self._port_combo.addItems(ports)
-        row.addWidget(self._port_combo, 1)
-
-        self._addr_edit = LineEdit()
-        self._addr_edit.setMinimumWidth(90)
-        self._addr_edit.setPlaceholderText("GPIB 地址")
-        self._addr_edit.setVisible(False)
-        row.addWidget(self._addr_edit, 1)
-
-    def _on_mode_changed(self):
-        mode = self.get_mode()
-        if self._port_combo:
-            self._port_combo.setVisible(mode == "usb")
-        if self._addr_edit:
-            self._addr_edit.setVisible(mode == "gpib")
-
-    def get_mode(self) -> str:
-        if self._mode_radios:
-            for pt, rb in self._mode_radios.items():
-                if rb.isChecked():
-                    return pt.lower()
-        return "usb"
-
-    def set_mode(self, mode: str):
-        mode = mode.upper()
-        rb = self._mode_radios.get(mode)
-        if rb:
-            rb.setChecked(True)
-
-    def get_port(self) -> str:
-        if self.get_mode() == "usb" and self._port_combo:
-            return self._port_combo.currentText().strip()
-        if self._addr_edit:
-            return self._addr_edit.text().strip()
-        return ""
-
-    def set_port(self, val: str):
-        if self.get_mode() == "usb" and self._port_combo:
-            if val:
-                idx = self._port_combo.findText(val)
-                if idx >= 0:
-                    self._port_combo.setCurrentIndex(idx)
-                else:
-                    self._port_combo.insertItem(0, val)
-                    self._port_combo.setCurrentIndex(0)
-        elif self._addr_edit:
-            self._addr_edit.setText(val)
-
-    def set_enabled(self, enabled: bool):
-        if self._port_combo:
-            self._port_combo.setEnabled(enabled)
-        if self._addr_edit:
-            self._addr_edit.setEnabled(enabled)
-        for rb in self._mode_radios.values():
-            rb.setEnabled(enabled)
-
-    def refresh_ports(self, ports: list[str]):
-        if self._port_combo and self._port_combo.isVisible():
-            current = self._port_combo.currentText()
-            self._port_combo.clear()
-            self._port_combo.addItems(ports)
-            idx = self._port_combo.findText(current)
-            if idx >= 0:
-                self._port_combo.setCurrentIndex(idx)
-
 
 class _ChannelConfigCard(QFrame):
-    """单通道配置卡片：Location ID + 三台仪器独立配置 + 状态。"""
+    """单通道配置卡片：Location path / Location ID + 是否测试 + 状态。"""
 
-    def __init__(self, index: int, parent=None):
+    def __init__(self, index: int, platform: str = PLATFORM_MACOS, parent=None):
         super().__init__(parent)
         self._index = index
-        self._instr_rows: dict[str, _InstrConfigRow] = {}
+        self._platform = platform
         self._test_enabled = True
         self._build()
 
@@ -352,57 +243,29 @@ class _ChannelConfigCard(QFrame):
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(6)
 
-        # DUT Location ID
+        # DUT Location path（Windows）/ Location ID（macOS）
+        is_windows = self._platform == PLATFORM_WINDOWS
         dut_row = QHBoxLayout()
         dut_row.setSpacing(12)
-        dut_label = QLabel("DUT")
+        dut_label = QLabel("Location path" if is_windows else "DUT")
         dut_label.setFont(_font(12))
-        dut_label.setFixedWidth(32)
+        dut_label.setFixedWidth(104 if is_windows else 32)
         dut_label.setStyleSheet(
             f"color: {Colors.TEXT_SECONDARY}; background: transparent; border: none;"
         )
         dut_row.addWidget(dut_label)
         self._loc_edit = LineEdit()
-        self._loc_edit.setPlaceholderText(f"Location ID (如 0x1420000{self._index})")
+        self._loc_edit.setPlaceholderText(
+            "如 1-3.4"
+            if is_windows
+            else f"Location ID (如 0x1420000{self._index})"
+        )
         self._loc_edit.setClearButtonEnabled(True)
         self._loc_edit.setMinimumWidth(180)
         dut_row.addWidget(self._loc_edit, 1)
         body.addLayout(dut_row)
 
-        # 三台仪器独立配置行
-        for key, label, has_mode in _CHANNEL_INSTRUMENTS:
-            row = _InstrConfigRow(label, has_mode)
-            self._instr_rows[key] = row
-            body.addWidget(row)
-
         outer.addWidget(self._body)
-
-    # ── 仪器属性访问 ──
-
-    def _get_row(self, key: str) -> _InstrConfigRow | None:
-        return self._instr_rows.get(key)
-
-    def get_instr_mode(self, key: str) -> str:
-        row = self._get_row(key)
-        return row.get_mode() if row else "usb"
-
-    def set_instr_mode(self, key: str, mode: str):
-        row = self._get_row(key)
-        if row:
-            row.set_mode(mode)
-
-    def get_instr_port(self, key: str) -> str:
-        row = self._get_row(key)
-        return row.get_port() if row else ""
-
-    def set_instr_port(self, key: str, val: str):
-        row = self._get_row(key)
-        if row:
-            row.set_port(val)
-
-    @property
-    def instr_rows(self) -> dict:
-        return self._instr_rows
 
     # ── 公共属性 ──
 
@@ -806,7 +669,8 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self._mgr = InstrumentManager.instance()
         self._rows: dict[str, _InstrumentRow] = {}
-        self._system_config = load_config()
+        self._active_platform = get_platform_mode()
+        self._system_config = load_config(platform=self._active_platform)
         self._original_config = dict(self._system_config)
         self._section_anchors: dict[str, QLabel] = {}  # 段名 → header QLabel
         self._sidebar_btns: dict[str, _SidebarBtn] = {}
@@ -961,11 +825,27 @@ class SettingsDialog(QDialog):
     # ── 卡片构建 ────────────────────────────────────────────────────────
 
     def _build_all_cards(self):
+        self._build_platform_card()
         self._build_instrument_cards()
         self._build_sfc_cards()
         self._build_serial_cards()
         self._build_general_cards()
         self._build_system_cards()
+
+    def _build_platform_card(self):
+        """运行平台切换放在设置页最上方。"""
+        self._add_section_header("运行平台")
+        self._platform_card = _ComboCard(
+            FluentIcon.APPLICATION,
+            "运行平台",
+            "macOS / Windows 各使用一套独立配置，切换后需重启生效",
+        )
+        self._platform_card.combo.addItems(["macOS", "Windows"])
+        self._platform_card.combo.setCurrentText(
+            "Windows" if self._active_platform == PLATFORM_WINDOWS else "macOS"
+        )
+        self._add_card(self._platform_card)
+        self._card_layout.addSpacing(20)
 
     def _build_instrument_cards(self):
         self._add_section_header("仪器设置")
@@ -1056,16 +936,35 @@ class SettingsDialog(QDialog):
         )
         self._add_card(self._baud_card)
 
+        is_windows = self._active_platform == PLATFORM_WINDOWS
         self._location_id_card = _LineEditCard(
             FluentIcon.PIN,
-            "DUT Location ID",
-            "USB 串口 Location ID，用于自动模式识别 DUT（可用 system_profiler SPUSBDataType 查看）",
+            "DUT Location path" if is_windows else "DUT Location ID",
+            "Windows USB 物理端口路径（如 1-3.4），用于自动模式识别 DUT"
+            if is_windows
+            else "USB 串口 Location ID，用于自动模式识别 DUT（可用 system_profiler SPUSBDataType 查看）",
         )
         stored_loc = self._system_config.get("dut_location_id", "")
         if stored_loc:
             self._location_id_card.edit.setText(stored_loc)
-        self._location_id_card.edit.setPlaceholderText("如 0x14200000")
+        self._location_id_card.edit.setPlaceholderText(
+            "如 1-3.4" if is_windows else "如 0x14200000"
+        )
         self._add_card(self._location_id_card)
+
+        self._interface_card = None
+        if is_windows:
+            self._interface_card = _ComboCard(
+                FluentIcon.LINK,
+                "DUT 串口接口",
+                "复合设备同时暴露 MI_00 / MI_02 时，选择实际用于测试的接口",
+            )
+            self._interface_card.combo.addItems(
+                ["任意", "MI_00", "MI_01", "MI_02", "MI_03"]
+            )
+            stored_iface = self._system_config.get("dut_interface", "")
+            self._interface_card.combo.setCurrentText(stored_iface or "任意")
+            self._add_card(self._interface_card)
 
         self._auto_test_card = _SwitchCard(
             FluentIcon.ROBOT,
@@ -1093,7 +992,9 @@ class SettingsDialog(QDialog):
         self._dut_list_card = _PushSettingCard(
             FluentIcon.INFO,
             "可用 DUT 设备",
-            "点击查看当前连接的 DUT 设备及其 Location ID",
+            "点击输入 VID/PID 查询匹配的 DUT 串口，复制 Location path 到通道配置"
+            if self._active_platform == PLATFORM_WINDOWS
+            else "点击查看当前连接的 DUT 设备及其 Location ID",
         )
         self._dut_list_card.clicked.connect(self._on_show_dut_list)
         self._add_card(self._dut_list_card)
@@ -1111,37 +1012,21 @@ class SettingsDialog(QDialog):
         self._channel_count_card.combo.currentTextChanged.connect(self._on_channel_count_changed)
         self._add_card(self._channel_count_card)
 
-        # 每个通道的配置卡片（Location ID + 三台仪器独立配置）
+        # 每个通道的配置卡片（Location ID / path + 是否测试）
         self._channel_cards: list[_ChannelConfigCard] = []
-        _ch_cfg = load_channel_config()
+        _ch_cfg = load_channel_config(platform=self._active_platform)
         channel_ids = _ch_cfg.get("location_ids", self._system_config.get("channel_location_ids", ["", "", "", ""]))
-        # 每台仪器独立存储：mode + port
-        dmm_modes = _ch_cfg.get("dmm_modes", self._system_config.get("channel_dmm_modes", ["", "", "", ""]))
-        dmm_ports = _ch_cfg.get("dmm_ports", self._system_config.get("channel_dmm_ports", ["", "", "", ""]))
-        ps_modes = _ch_cfg.get("ps_modes", self._system_config.get("channel_ps_modes", ["", "", "", ""]))
-        ps_ports = _ch_cfg.get("ps_ports", self._system_config.get("channel_ps_ports", ["", "", "", ""]))
-        relay_ports = _ch_cfg.get("relay_ports", self._system_config.get("channel_relay_ports", ["", "", "", ""]))
         enabled_flags = _ch_cfg.get(
             "channels_enabled",
             self._system_config.get("channel_test_enabled", []),
         )
         for i in range(8):
-            card = _ChannelConfigCard(i)
+            card = _ChannelConfigCard(i, self._active_platform)
             card.set_test_enabled(
                 enabled_flags[i] if i < len(enabled_flags) else True
             )
             if i < len(channel_ids):
                 card.set_location_id(channel_ids[i])
-            if i < len(dmm_modes) and dmm_modes[i]:
-                card.set_instr_mode("dmm", dmm_modes[i])
-            if i < len(dmm_ports) and dmm_ports[i]:
-                card.set_instr_port("dmm", dmm_ports[i])
-            if i < len(ps_modes) and ps_modes[i]:
-                card.set_instr_mode("ps", ps_modes[i])
-            if i < len(ps_ports) and ps_ports[i]:
-                card.set_instr_port("ps", ps_ports[i])
-            if i < len(relay_ports) and relay_ports[i]:
-                card.set_instr_port("relay", relay_ports[i])
             self._channel_cards.append(card)
 
         self._multi_group = _MultiChannelGroup(self._channel_cards)
@@ -1169,11 +1054,10 @@ class SettingsDialog(QDialog):
 
         self._log_path_card = _PushSettingCard(
             FluentIcon.FOLDER,
-            "日志保存路径",
-            os.path.expanduser(
-                self._system_config.get("log_path", "~/Documents/AutoBench/unit-archive")
-            ),
+            "数据保存路径",
+            f"日志写入 {output_base() / 'unit-archive'}，CSV 写入 {output_base() / 'Test_CSV'}（不存在自动创建）",
         )
+        self._log_path_card.set_content(str(output_base()))
         self._log_path_card.clicked.connect(self._on_select_log_path)
         self._add_card(self._log_path_card)
 
@@ -1230,28 +1114,118 @@ class SettingsDialog(QDialog):
                 idx = row._port_combo.findText(current)
                 if idx >= 0:
                     row._port_combo.setCurrentIndex(idx)
-        # 刷新通道卡片的串口列表
-        for card in self._channel_cards:
-            for row in card.instr_rows.values():
-                row.refresh_ports(ports)
 
     def _on_show_dut_list(self):
-        """展示当前可用的 DUT 设备及其 Location ID。"""
+        """展示当前可用的 DUT 设备及其 Location ID / path。"""
+        if self._active_platform == PLATFORM_WINDOWS:
+            self._show_windows_dut_lookup()
+            return
+
         from app.models.device import list_dut_devices
         devs = list_dut_devices()
+        field = "Location ID"
         if devs:
             lines = ["当前连接的 DUT 设备:\n"]
             for i, d in enumerate(devs, 1):
-                lines.append(f"  CH{i}: Location ID = {d['location_id']}  ({d['device']})")
-            lines.append("\n将对应的 Location ID 填入下方通道配置中即可。")
+                lines.append(f"  CH{i}: {field} = {d['location_id']}  ({d['device']})")
+            lines.append(f"\n将对应的 {field} 填入下方通道配置中即可。")
             QMessageBox.information(self, "可用 DUT 设备", "\n".join(lines))
         else:
             QMessageBox.information(self, "可用 DUT 设备", "未检测到 DUT 串口设备")
 
+    def _show_windows_dut_lookup(self):
+        """Windows：输入 VID/PID 查询可复制的 Location path。"""
+        from app.models.device import list_dut_devices
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("可用 DUT 设备")
+        dlg.resize(760, 400)
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(10)
+
+        form = QHBoxLayout()
+        form.setSpacing(8)
+        form.addWidget(QLabel("VID"))
+        vid_edit = LineEdit()
+        vid_edit.setPlaceholderText("如 290B")
+        vid_edit.setFixedWidth(100)
+        vid_edit.setText(self._system_config.get("dut_vid", ""))
+        form.addWidget(vid_edit)
+        form.addWidget(QLabel("PID"))
+        pid_edit = LineEdit()
+        pid_edit.setPlaceholderText("如 092F")
+        pid_edit.setFixedWidth(100)
+        pid_edit.setText(self._system_config.get("dut_pid", ""))
+        form.addWidget(pid_edit)
+        query_btn = PrimaryPushButton("查询")
+        form.addWidget(query_btn)
+        form.addStretch()
+        root.addLayout(form)
+
+        hint = QLabel("只列出 Class Ports 中匹配 VID/PID 的串口；复制 Location path 填入通道配置。")
+        hint.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; background: transparent;")
+        root.addWidget(hint)
+
+        result = QPlainTextEdit()
+        result.setReadOnly(True)
+        result.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        root.addWidget(result, 1)
+
+        paths: list[str] = []
+
+        def do_query():
+            nonlocal paths
+            vid = vid_edit.text().strip()
+            pid = pid_edit.text().strip()
+            self._system_config["dut_vid"] = vid
+            self._system_config["dut_pid"] = pid
+            devs = list_dut_devices(vid=vid, pid=pid)
+            groups: dict[str, list[dict]] = {}
+            for dev in devs:
+                base = (dev.get("location_id") or "").split(":", 1)[0]
+                if base:
+                    groups.setdefault(base, []).append(dev)
+            paths = sorted(groups)
+            if not paths:
+                result.setPlainText("未找到匹配的 DUT 串口设备")
+                return
+            lines = ["Location path\t串口（接口）\tVID:PID"]
+            for path in paths:
+                items = groups[path]
+                ports = ", ".join(
+                    f"{d['device']}({d.get('interface') or '-'})" for d in items
+                )
+                vp = f"{items[0].get('vid', '')}:{items[0].get('pid', '')}"
+                lines.append(f"{path}\t{ports}\t{vp}")
+            result.setPlainText("\n".join(lines))
+
+        query_btn.clicked.connect(do_query)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        copy_btn = PrimaryPushButton("复制全部 Location path")
+        copy_btn.clicked.connect(
+            lambda: QApplication.clipboard().setText("\n".join(paths))
+        )
+        btn_row.addWidget(copy_btn)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(close_btn)
+        root.addLayout(btn_row)
+
+        do_query()
+        dlg.exec()
+
     def _on_select_log_path(self):
         current = self._log_path_card._content_lbl.text()
-        folder = QFileDialog.getExistingDirectory(self, "选择日志保存路径", current)
+        folder = QFileDialog.getExistingDirectory(self, "选择数据保存路径", current)
         if folder:
+            try:
+                os.makedirs(folder, exist_ok=True)
+            except Exception as e:
+                QMessageBox.warning(self, "路径不可用", f"无法创建目录：{e}")
+                return
             self._log_path_card.set_content(folder)
             self._system_config["log_path"] = folder
 
@@ -1324,6 +1298,8 @@ class SettingsDialog(QDialog):
         # 串口设置
         self._baud_card.combo.setEnabled(enabled)
         self._location_id_card.edit.setEnabled(enabled)
+        if self._interface_card is not None:
+            self._interface_card.combo.setEnabled(enabled)
         self._auto_test_card.switch.setEnabled(enabled)
         # 多通道设置
         self._multi_channel_card.switch.setEnabled(enabled)
@@ -1331,11 +1307,10 @@ class SettingsDialog(QDialog):
         for card in self._channel_cards:
             card.loc_edit.setEnabled(enabled)
             card.test_check.setEnabled(enabled)
-            for row in card.instr_rows.values():
-                row.set_enabled(enabled)
         # 通用设置
         self._fail_stop_card.switch.setEnabled(enabled)
         # 系统设置
+        self._platform_card.combo.setEnabled(enabled)
         self._auto_scroll_card.switch.setEnabled(enabled)
         self._log_retention_card.combo.setEnabled(enabled)
 
@@ -1359,6 +1334,13 @@ class SettingsDialog(QDialog):
     def _on_save(self):
         if not self._is_unlocked:
             return
+
+        selected_platform = (
+            PLATFORM_WINDOWS
+            if "windows" in self._platform_card.combo.currentText().lower()
+            else PLATFORM_MACOS
+        )
+        platform_changed = selected_platform != self._active_platform
 
         dmm_mode = self._dmm_row.get_mode()
         dmm_port = self._dmm_row.get_port_value()
@@ -1390,34 +1372,31 @@ class SettingsDialog(QDialog):
         self._system_config["sfc_vip"] = self._sfc_vip_card.edit.text().strip()
         self._system_config["dut_baud_rate"] = int(self._baud_card.combo.currentText())
         self._system_config["dut_location_id"] = self._location_id_card.edit.text().strip()
+        if self._interface_card is not None:
+            iface = self._interface_card.combo.currentText()
+            self._system_config["dut_interface"] = "" if iface == "任意" else iface
         self._system_config["auto_test_mode"] = self._auto_test_card.switch.isChecked()
         self._system_config["multi_channel_mode"] = self._multi_channel_card.switch.isChecked()
         self._system_config["channel_count"] = int(self._channel_count_card.combo.currentText())
         loc_ids = [c.get_location_id() for c in self._channel_cards[:8]]
-        dmm_modes = [c.get_instr_mode("dmm") for c in self._channel_cards[:8]]
-        dmm_ports = [c.get_instr_port("dmm") for c in self._channel_cards[:8]]
-        ps_modes = [c.get_instr_mode("ps") for c in self._channel_cards[:8]]
-        ps_ports = [c.get_instr_port("ps") for c in self._channel_cards[:8]]
-        relay_ports = [c.get_instr_port("relay") for c in self._channel_cards[:8]]
         enabled_flags = [c.is_test_enabled() for c in self._channel_cards[:8]]
         # 保存到独立 JSON
-        save_channel_config({
-            "location_ids": loc_ids,
-            "dmm_modes": dmm_modes,
-            "dmm_ports": dmm_ports,
-            "ps_modes": ps_modes,
-            "ps_ports": ps_ports,
-            "relay_ports": relay_ports,
-            "channels_enabled": enabled_flags,
-        })
+        save_channel_config(
+            {
+                "location_ids": loc_ids,
+                "channels_enabled": enabled_flags,
+            },
+            platform=self._active_platform,
+        )
         # 同时保留旧键向后兼容
         self._system_config["channel_location_ids"] = loc_ids
-        self._system_config["channel_dmm_modes"] = dmm_modes
-        self._system_config["channel_dmm_ports"] = dmm_ports
-        self._system_config["channel_ps_modes"] = ps_modes
-        self._system_config["channel_ps_ports"] = ps_ports
-        self._system_config["channel_relay_ports"] = relay_ports
         self._system_config["channel_test_enabled"] = enabled_flags
+        for key in (
+            "channel_dmm_modes", "channel_dmm_ports",
+            "channel_ps_modes", "channel_ps_ports",
+            "channel_relay_ports", "channel_instruments",
+        ):
+            self._system_config.pop(key, None)
         self._system_config["fail_stop_test"] = self._fail_stop_card.switch.isChecked()
         self._system_config["auto_scroll_log"] = (
             self._auto_scroll_card.switch.isChecked()
@@ -1425,10 +1404,12 @@ class SettingsDialog(QDialog):
         self._system_config["log_retention_days"] = int(
             self._log_retention_card.combo.currentText()
         )
-        save_config(self._system_config)
+        save_config(self._system_config, platform=self._active_platform)
+        if platform_changed:
+            set_platform_mode(selected_platform)
 
         # 对比原始配置，有变更才提示重启
-        if self._system_config != self._original_config:
+        if platform_changed or self._system_config != self._original_config:
             import os as _os
             import sys as _sys
 
@@ -1463,6 +1444,10 @@ class SettingsDialog(QDialog):
             self._sidebar_btns[first].set_active(True)
         # 从 InstrumentManager 同步当前仪器状态（Dialog 懒创建，之前的信号已丢失）
         self._sync_instrument_status()
+        # 运行平台以当前加载的 profile 为准（切换需重启后生效）
+        self._platform_card.combo.setCurrentText(
+            "Windows" if self._active_platform == PLATFORM_WINDOWS else "macOS"
+        )
         # 多通道开启时，每次打开设置页都折叠多通道设置
         if self._multi_channel_card.switch.isChecked():
             self._multi_group.set_collapsed(True)

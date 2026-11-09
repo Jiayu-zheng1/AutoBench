@@ -1,7 +1,7 @@
 """精简 Logger — 非测试期间仅 stdout，测试期间按 SN→时间戳 写入 test.log。
 
 目录结构:
-    ~/Documents/AutoBench/unit-archive/
+    <设置中的数据保存路径>/unit-archive/
     ├── GVVG93V6JH/
     │   ├── 20260624_143000/
     │   │   ├── test.log
@@ -17,7 +17,6 @@
     logger.info("消息")
 """
 
-import os
 import sys
 import threading
 import time
@@ -25,11 +24,7 @@ from pathlib import Path
 
 from loguru import logger as _logger
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  常量
-# ═══════════════════════════════════════════════════════════════════════════
-
-ARCHIVE_DIR = Path(os.path.expanduser("~/Documents/AutoBench/unit-archive"))
+from app.utils.paths import archive_dir
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  全局状态
@@ -94,7 +89,7 @@ def make_unit_folder(scan_sn: str = "", fgsn: str = "", mlbsn: str = "") -> Path
     """
     sn = scan_sn or fgsn or mlbsn or time.strftime("%Y%m%d_%H%M%S")
     ts = time.strftime("%Y%m%d_%H%M%S")
-    unit_dir = ARCHIVE_DIR / sn / ts
+    unit_dir = archive_dir() / sn / ts
     unit_dir.mkdir(parents=True, exist_ok=True)
     return unit_dir
 

@@ -27,8 +27,17 @@ jobs:
           set +e
           uvx ruff==0.17.3 check --select E9,F63,F7,F82 --output-format=rdjson . \
             | reviewdog -f=rdjson -name=ruff -reporter=github-pr-review -filter-mode=added -level=error -fail-level=any
-          if [ "${PIPESTATUS[0]}" -eq 0 ]; then
-            gh pr review "${{ github.event.pull_request.number }}" --comment \
-              --body "Ruff 静态审查通过：E9 / F63 / F7 / F82 未发现问题（commit ${{ github.event.pull_request.head.sha }}）。"
+          status=("${PIPESTATUS[@]}")
+
+          # Ruff 执行失败（含语法/配置错误）直接失败
+          if [ "${status[0]}" -ne 0 ]; then
+            exit "${status[0]}"
           fi
-          exit 0
+
+          # reviewdog 报告问题时返回非零，不能把检查伪造成绿色
+          if [ "${status[1]}" -ne 0 ]; then
+            exit "${status[1]}"
+          fi
+
+          gh pr review "${{ github.event.pull_request.number }}" --comment \
+            --body "Ruff 静态审查通过：E9 / F63 / F7 / F82 未发现问题（commit ${{ github.event.pull_request.head.sha }}）。"
