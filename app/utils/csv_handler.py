@@ -1,6 +1,7 @@
 """CSV 处理器 — 日聚合 CsvReport + 单pcs RecordsCsvWriter。"""
 import csv
 import os
+import tempfile
 import threading
 import time
 from typing import Any
@@ -90,18 +91,32 @@ class CsvReport:
         else:
             target = list(self.columns)
 
-        with open(filepath, 'w', newline='') as f:
-            writer = csv.DictWriter(
-                f, fieldnames=target, extrasaction='ignore'
+        tmp_path = None
+        try:
+            fd, tmp_path = tempfile.mkstemp(
+                prefix=".autobench-", suffix=".csv",
+                dir=os.path.dirname(filepath) or ".",
             )
-            writer.writeheader()
-            for raw in old_rows:
-                row = {
-                    key: raw[i] if i < len(raw) else ""
-                    for i, key in enumerate(old_header)
-                }
-                writer.writerow({col: row.get(col, "") for col in target})
-        self.columns = target
+            with os.fdopen(fd, 'w', newline='') as f:
+                writer = csv.DictWriter(
+                    f, fieldnames=target, extrasaction='ignore'
+                )
+                writer.writeheader()
+                for raw in old_rows:
+                    row = {
+                        key: raw[i] if i < len(raw) else ""
+                        for i, key in enumerate(old_header)
+                    }
+                    writer.writerow({col: row.get(col, "") for col in target})
+            os.replace(tmp_path, filepath)
+            tmp_path = None
+            self.columns = target
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
     def set_csv_file(self, serial: str, value_dict: dict,
                      slot: str = "1", status: str = ""):
