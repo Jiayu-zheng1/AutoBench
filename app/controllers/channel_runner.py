@@ -18,7 +18,7 @@ from app.utils.logger import begin_unit_log, end_unit_log, get_logger, make_unit
 
 logger = get_logger("ChannelRunner")
 from app.controllers.base_runner import BaseTestRunner
-from app.models.device import find_port_by_location
+from app.models.device import DutDisconnected, find_port_by_location
 from app.models.sfc_connector import SFCConnector
 from app.models.test_config import TestConfig, load_test_configs
 from app.models.test_item import TestItem
@@ -31,11 +31,9 @@ _STRIP_HTML = _re.compile(r"<[^>]+>")
 
 
 class ChannelRunner(BaseTestRunner):
-    """多通道测试线程：独立 DUT 连接、独立测试序列、CSV 报表、SN 日志归档。
+    """多通道测试线程：DUT 串口、测试序列、CSV 报表、SN 日志归档。
 
-    与 TestRunner 对称：
-    - TestRunner  : 单通道，全局仪器
-    - ChannelRunner: 多通道，独立仪器实例（dmm/ps/relay 构造注入）
+    多通道阶段暂不使用仪器；TestItem 只负责 DUT 串口相关测试项。
     """
 
     signal_value = Signal(str, str, str)
@@ -47,18 +45,17 @@ class ChannelRunner(BaseTestRunner):
 
     def __init__(self, channel_id: str, csv_rows: list[TestStep],
                  location_id: str = "",
-                 instrument_manager=None, sn: str = "", fail_stop: bool = True,
-                 dmm=None, ps=None, relay=None):
+                 sn: str = "", fail_stop: bool = True,
+                 dut_port: str | None = None):
         super().__init__()
         self._channel_id = channel_id
         self._csv_rows = csv_rows
         self._location_id = location_id
+        self._dut_port = dut_port
         self._sn = sn
         self._fail_stop = fail_stop
         self._test_status = True
-        self.test_unit = TestItem(
-            instrument_manager=instrument_manager, dmm=dmm, ps=ps, relay=relay,
-        )
+        self.test_unit = TestItem()
         self.configs: list[TestConfig] = []
         self.test_items: list[str] = []
         self.lower_limit_map: dict = {}
@@ -89,7 +86,10 @@ class ChannelRunner(BaseTestRunner):
     def run(self):
         self._log(f"通道 {self._channel_id} 开始测试 (location={self._location_id or 'auto'})")
 
-        if self._location_id:
+        if self._dut_port:
+            self._log(f"  [{self._channel_id}] DUT 串口: {self._dut_port}")
+            self.test_unit._dut_port = self._dut_port
+        elif self._location_id:
             port = find_port_by_location(self._location_id)
             if port is None:
                 self._log(f"  [{self._channel_id}] 未找到 DUT 串口 (location={self._location_id})")
@@ -122,6 +122,10 @@ class ChannelRunner(BaseTestRunner):
         self._test_values: dict[str, str] = {}
 
         for cfg in self.configs:
+            if self._aborted():
+                self._test_status = False
+                self._log(f"  [{self._channel_id}] DUT 已拔出，中止测试并跳过后续测试项")
+                break
             display = cfg.sub_test_name
             method = cfg.function
             step_passed = True
@@ -146,6 +150,10 @@ class ChannelRunner(BaseTestRunner):
                     self.signal_color.emit(self._channel_id, display, "Fail")
                     self._test_status = False
 
+            except DutDisconnected:
+                self._test_status = False
+                self._log(f"  [{self._channel_id}] DUT 串口已断开，中止测试并判定 Fail")
+                break
             except Exception as e:
                 self._log(f"  [{self._channel_id}] 错误: {cfg.sub_test_name} — {e}")
                 self._test_values[cfg.sub_test_name] = "Error"
@@ -173,6 +181,11 @@ class ChannelRunner(BaseTestRunner):
 
             if self._fail_stop and not self._test_status:
                 self._log(f"  [{self._channel_id}] Fail-stop 已启用，停止后续测试")
+                break
+
+            if self._aborted():
+                self._test_status = False
+                self._log(f"  [{self._channel_id}] DUT 已拔出，中止测试并跳过后续测试项")
                 break
 
             if self.test_unit.FGSN:

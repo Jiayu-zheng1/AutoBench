@@ -9,11 +9,23 @@ from app.utils.logger import get_logger
 
 logger = get_logger("DUT")
 
+READ_TIMEOUT = 3.0
 
-def list_dut_devices() -> list[dict]:
+
+class DutDisconnected(Exception):
+    """DUT 串口句柄失效（拔出、驱动重置或端口被关闭）。"""
+
+
+def list_dut_devices(vid: str = "", pid: str = "") -> list[dict]:
     """列出所有可用的 DUT 串口设备及其 location 信息。
-    用于设置页显示可选设备列表，帮助用户配置每通道 Location ID。
+    用于设置页显示可选设备列表，帮助用户配置每通道 Location ID / path。
+    Windows 可按 VID/PID 过滤。
     """
+    import sys
+
+    if sys.platform.startswith("win"):
+        return _list_windows_dut_devices(vid, pid)
+
     import re as _re
     import subprocess
 
@@ -35,6 +47,48 @@ def list_dut_devices() -> list[dict]:
                 })
     except Exception:
         pass
+    return result
+
+
+def _list_windows_dut_devices(vid: str = "", pid: str = "") -> list[dict]:
+    """Windows：用 pyserial 列出 USB 串口及 Location path。"""
+    import re as _re
+    from serial.tools import list_ports
+
+    target_vid = vid.upper().replace("0X", "").strip()
+    target_pid = pid.upper().replace("0X", "").strip()
+
+    def _interface(location: str) -> str:
+        text = location or ""
+        match = _re.search(r"USBMI\((\d+)\)", text, _re.IGNORECASE)
+        if match:
+            return f"MI_{int(match.group(1)):02d}"
+        if ":" in text:
+            match = _re.search(r"\.(\d+)\s*$", text.split(":", 1)[1])
+            if match:
+                return f"MI_{int(match.group(1)):02d}"
+        return ""
+
+    result = []
+    for port in list_ports.comports():
+        if getattr(port, "vid", None) is None:
+            continue
+        port_vid = f"{port.vid:04X}"
+        port_pid = f"{port.pid:04X}" if port.pid is not None else ""
+        if target_vid and port_vid.upper() != target_vid:
+            continue
+        if target_pid and port_pid.upper() != target_pid:
+            continue
+        location = port.location or ""
+        result.append({
+            "device": port.device,
+            "suffix": port.serial_number or "",
+            "location_id": location,
+            "interface": _interface(location),
+            "vid": port_vid,
+            "pid": port_pid,
+        })
+    result.sort(key=lambda d: (d["location_id"], d["device"]))
     return result
 
 
@@ -156,28 +210,51 @@ class Device:
         time.sleep(0.01)
         self.ser.write(b"\n")
 
+    def _handle_serial_error(self, exc):
+        logger.warning(f"DUT 串口句柄失效: {exc}")
+        try:
+            self.close_port()
+        except Exception:
+            pass
+        self.ser = None
+        raise DutDisconnected(str(exc)) from exc
+
     def read_cmd(self):
         buffr = b""
-        while True:
-            data = self.ser.read_all()
-            if data:
-                buffr += data
-            if data.endswith(b"[3G"):
-                logger.info(f"read_data:{buffr.decode()}")
-                break
-        return buffr.decode()
+        deadline = time.time() + READ_TIMEOUT
+        try:
+            while time.time() < deadline:
+                data = self.ser.read_all()
+                if data:
+                    buffr += data
+                    if data.endswith(b"[3G"):
+                        logger.info(f"read_data:{buffr.decode(errors='replace')}")
+                        break
+                else:
+                    time.sleep(0.01)
+        except (serial.SerialException, OSError) as exc:
+            self._handle_serial_error(exc)
+        return buffr.decode(errors="replace")
 
     def clear_data(self):
-        while True:
-            data = self.ser.read_all()
-            logger.debug(f"clear {data}")
-            if not data:
-                break
+        deadline = time.time() + 0.5
+        try:
+            while time.time() < deadline:
+                data = self.ser.read_all()
+                logger.debug(f"clear {data}")
+                if not data:
+                    break
+                time.sleep(0.005)
+        except (serial.SerialException, OSError) as exc:
+            self._handle_serial_error(exc)
 
     def send_cmd(self, cmd):
-        self.clear_data()
-        self.ser.write((cmd + "\n").encode())
-        logger.debug(f"send_cmd:{cmd}")
+        try:
+            self.clear_data()
+            self.ser.write((cmd + "\n").encode())
+            logger.debug(f"send_cmd:{cmd}")
+        except (serial.SerialException, OSError) as exc:
+            self._handle_serial_error(exc)
 
     def close_port(self):
         if self.ser and self.ser.is_open:
@@ -190,12 +267,16 @@ class Device:
 
     def send_hex_cmd(self, hex_str: str, delay: float = 0.05) -> tuple[str, str]:
         """发送 Hex 指令，返回 (原始hex值, ASCII解码结果)。"""
-        self.ser.reset_input_buffer()
-        raw = hex_str.strip().replace(" ", "")
-        data = bytes.fromhex(raw)
-        self.ser.write(data)
-        time.sleep(delay)
-        rx = self.ser.read_all()
+        rx = b""
+        try:
+            self.ser.reset_input_buffer()
+            raw = hex_str.strip().replace(" ", "")
+            data = bytes.fromhex(raw)
+            self.ser.write(data)
+            time.sleep(delay)
+            rx = self.ser.read_all()
+        except (serial.SerialException, OSError) as exc:
+            self._handle_serial_error(exc)
         logger.info(f"send_hex_cmd sent: {hex_str}, received raw: {rx.hex()}")
         if not rx:
             return "", ""

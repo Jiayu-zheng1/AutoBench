@@ -84,3 +84,16 @@ class DutMonitor(QThread):
         while elapsed < seconds and not self._stop_event.is_set():
             time.sleep(min(0.2, seconds - elapsed))
             elapsed += 0.2
+
+
+def create_dut_monitor(location_id: str = "", platform: str | None = None,
+                       interface: str = "", vid: str = "", pid: str = ""):
+    """按指定平台创建 DUT 监控器。"""
+    from app.utils.config import PLATFORM_WINDOWS, get_platform_mode
+
+    mode = platform or get_platform_mode()
+    if mode == PLATFORM_WINDOWS:
+        from app.controllers.windows_monitor import WindowsDutMonitor
+
+        return WindowsDutMonitor(location_id, interface, vid, pid)
+    return DutMonitor(location_id)

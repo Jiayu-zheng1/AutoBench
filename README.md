@@ -34,20 +34,25 @@
 
 ### 环境要求
 
-- macOS 10.15+
+- macOS 10.15+ / Windows 10+
 - Python 3.12+
 - NI-VISA（GPIB 仪器需要，USB 模式可选）
 - FTDI USB 转串口驱动（34970A USB 连接需要）
 
 ### 安装与启动
 
+推荐使用 uv（Windows PowerShell / macOS 终端相同）：
+
 ```bash
-uv venv && source .venv/bin/activate
-uv pip install -r requirements.txt
-python main.py
+uv sync
+uv run main.py
 ```
 
-> 不用 uv 时 `pip install -r requirements.txt` 等效。
+> 不使用 uv 时：`pip install -r requirements.txt && python main.py`。
+
+Windows 配置文件写入 `%APPDATA%\AutoBench\`；macOS 写入 `~/Documents/AutoBench/`。
+
+设置页可修改“数据保存路径”，日志和 CSV 会自动生成到该目录下：`unit-archive/` 与 `Test_CSV/`。
 
 ### 首次使用
 
@@ -58,7 +63,7 @@ python main.py
 ## 特性
 
 - **双测试模式** — 手动输入 SN 点 Start / 自动模式监控 DUT 串口插拔即测
-- **多通道并行测试** — 最多 8 个通道同时测试独立 DUT，每通道独立串口 + 独立仪器实例
+- **多通道并行测试** — 最多 8 个通道同时测试独立 DUT，每通道独立串口（当前阶段多通道暂不使用仪器）
 - **双 CSV 架构** — Main.csv（测试序列） + Limits.csv（判据），按 SubTestName 合并
 - **5 通用测量方法** — Read_ASCII_CMD（hex+正则提取）、Read_HEX_CMD（raw hex）、Read_IMPEDANCE（阻抗）、Read_VOLTAGE（电压）、反射调用（自定义方法），无需注册表
 - **Config 驱动测试** — 测试逻辑完全由 CSV config 列定义，新增测试项只需改 CSV 无需写代码
@@ -88,9 +93,10 @@ AutoBench/
     ├── controllers/
     │   ├── base_runner.py            # 测试执行引擎基类（模板方法模式）
     │   ├── test_runner.py            # 单通道测试执行（SFC + CSV）
-    │   ├── channel_runner.py         # 多通道测试执行（独立仪器 + 串口定位）
+    │   ├── channel_runner.py         # 多通道测试执行（独立 DUT 串口；暂不使用仪器）
     │   ├── instrument_manager.py     # 仪器管理器单例
-    │   ├── dut_monitor.py            # DUT 插拔监控（ioreg + location ID）
+    │   ├── dut_monitor.py            # DUT 插拔监控（macOS ioreg / 平台工厂）
+    │   ├── windows_monitor.py         # Windows 串口轮询 + Hub 端口 Slot 映射
     │   └── log_controller.py         # loguru → Qt 信号桥接
     ├── models/
     │   ├── test_plan.py              # TestStep + TestPlan 类型化数据模型（替代裸 dict）
@@ -265,12 +271,17 @@ config 字段一览：
 
 ### 数据目录
 
-所有持久化数据存放在 `~/Documents/AutoBench/`：
+配置文件位置按平台区分：
+
+- macOS：`~/Documents/AutoBench/`
+- Windows：`%APPDATA%\AutoBench\`（如 `C:\Users\<user>\AppData\Roaming\AutoBench\`）
+
+Windows 首次升级会自动把旧 `Documents\AutoBench` 下的配置文件复制到 AppData。
+
+日志与测试结果 CSV 仍位于 `~/Documents/AutoBench/`：
 
 ```
 ~/Documents/AutoBench/
-├── system_config.json               # 系统配置
-├── instrument_config.json           # 仪器连接配置
 ├── TopLevelLog/                     # 日志
 │   ├── InstrumentManager.log        # 今天活跃日志
 │   ├── TestRunner.log
@@ -283,13 +294,39 @@ config 字段一览：
 └── Test_CSV/                        # 测试结果 CSV
 ```
 
+配置文件（macOS `~/Documents/AutoBench/`，Windows `%APPDATA%\AutoBench\`）：
+
+```
+system_config.json                   # 系统配置（双平台 profile）
+instrument_config.json               # 仪器连接配置
+channel_config.json                  # 多通道配置（双平台 profile）
+```
+
 ### 系统配置键名说明
+
+`system_config.json` 按平台分为两套 profile：
+
+```json
+{
+  "platform_mode": "macos",
+  "profiles": { "macos": { ... }, "windows": { ... } }
+}
+```
+
+- 设置页最上方 → **运行平台** 可切换 `macOS` / `Windows`，切换后需重启。
+- 旧版扁平配置会自动迁移到当前平台 profile。
+- `channel_config.json` 同样按平台保存两套通道配置，两套的 JSON 结构完全一致（`location_ids` / `dmm_modes` / `dmm_ports` / `ps_modes` / `ps_ports` / `relay_ports` / `channels_enabled`）；macOS 存 Location ID，Windows 存 Location path。
+- 仪器配置暂保持全局共享。
 
 | 键 | 默认值 | 说明 |
 |---|---|---|
 | `log_retention_days` | 90 | 日志保留天数，过期自动删除 |
+| `log_path` | `~/Documents/AutoBench` | 数据根目录：日志写入 `unit-archive/`，CSV 写入 `Test_CSV/` |
 | `dut_baud_rate` | 921600 | DUT 串口波特率 |
-| `dut_location_id` | `""` | DUT USB Location ID（单通道模式） |
+| `dut_location_id` | `""` | DUT USB Location ID / Location path（单通道模式） |
+| `dut_interface` | `""` | Windows 复合设备串口接口，如 `MI_02`；空=任意 |
+| `dut_vid` | `""` | Windows DUT VID 过滤，如 `290B` |
+| `dut_pid` | `""` | Windows DUT PID 过滤，如 `092F` |
 | `auto_test_mode` | false | 自动测试模式，监控 DUT 插拔即测 |
 | `auto_connect_instruments` | true | 启动时自动检测并连接仪器；关闭后需手动连接 |
 | `fail_stop_test` | true | 测试项失败后停止后续测试 |
@@ -309,7 +346,7 @@ config 字段一览：
 1. **连接仪器** — 默认启动软件后自动检测仪器，顶栏状态圆点 ●34970A / ●IT6382 / ●Relay / ●DUT 变绿表示连接成功；设置页 → 仪器设置可关闭“自动连接仪器”，关闭后需在下方逐台手动连接
 2. **设置** — 点击“设置”按钮进入设置页，输入密码 `123` 解锁编辑
 3. **单通道测试** — 关闭多通道模式，输入 SN → 点 **Start**
-4. **多通道测试** — 设置页 → 串口设置 → 开启多通道测试模式 → 配置通道数量（通道 1-N 收纳在“多通道设置”分组中，整组折叠/展开）+ 各通道 Location ID/仪器，逐通道勾选“是否测试”→ 保存重启 → 在主页各通道卡片输入 SN 后点全局 Start
+4. **多通道测试** — 设置页 → 串口设置 → 开启多通道测试模式 → 配置通道数量（通道 1-N 收纳在“多通道设置”分组中，整组折叠/展开）+ 各通道 Location ID / path，逐通道勾选“是否测试”→ 保存重启 → 在主页各通道卡片输入 SN 后点全局 Start；当前多通道阶段暂不使用仪器
 
 ### 手动模式
 
@@ -320,16 +357,20 @@ config 字段一览：
 
 ### 自动模式
 
-1. 设置页 → 串口设置 → 填入 DUT Location ID
-2. 打开"自动测试模式"开关
-3. 插入 DUT → 自动开始测试 → 拔出 → 再插入 → 再次测试
+1. macOS：设置页 → 串口设置 → 填入 DUT Location ID
+2. Windows：可在设置里填 Location path（如 `1-3.4`）；留空则按 Hub 下游端口号自动映射 Slot
+   复合设备若同时暴露 `MI_00` / `MI_02`，在“DUT 串口接口”选择实际测试口（如 `MI_02`）
+3. 打开"自动测试模式"开关
+4. 插入 DUT → 自动开始测试；测试中拔出 → 立即中止并判定 Fail，后续测试项跳过
+5. 重新插入 → 再次自动测试
 
 ### 多通道测试
 
-1. **配置**：设置页 → 串口设置 → 开启"多通道测试模式" → 选择通道数量（通道 1-N 统一收纳在“多通道设置”分组，默认折叠）→ 展开分组后为每个通道填入 Location ID + 配置仪器端口 + 勾选“是否测试”（未勾选通道主页仍显示，但不参与测试）→ 保存并重启
-2. **查看 DUT**：点击"可用 DUT 设备"查看当前连接的 DUT 及 Location ID
-3. **测试**：在主页各通道卡片内扫描/输入 SN → 点 **全局 Start** 同时启动所有已勾选通道；各通道 Tab 仅显示结果和日志，不再单独提供 SN 和 Start；通道测试完成后该卡片 SN 自动清空，便于扫描下一颗
-4. **查看汇总**：Summary Tab 每个通道卡片显示独立的 SN 输入、状态和 Input / Pass / Fail 计数（按整次测试单元统计，多次 Start 连续累计），未勾选通道显示“不测试”
+1. **配置**：设置页 → 串口设置 → 开启"多通道测试模式" → 选择通道数量（通道 1-N 统一收纳在“多通道设置”分组，默认折叠）→ 展开分组后为每个通道勾选“是否测试”（macOS 填 Location ID；Windows 填 Location path，如 `1-3.4`，留空则按 Hub 端口尾号）→ 保存并重启。多通道阶段暂不使用仪器
+2. **查看 DUT**：macOS 点击"可用 DUT 设备"查看 Location ID；Windows 在"可用 DUT 设备"里填 VID/PID 查询，复制 `Location path` 填入通道配置
+3. **测试**：Windows 插入 DUT 后按 Slot 自动触发；也可在主页各通道卡片内输入 SN 后点 **全局 Start**；各通道 Tab 仅显示结果和日志
+4. **拔出处理**：测试中拔出 DUT 立即中止，判定 Fail，后续测试项不再执行，并按正常 Fail 统计
+5. **查看汇总**：Summary Tab 每个通道卡片显示独立的 SN 输入、状态和 Input / Pass / Fail 计数（按整次测试单元统计，多次 Start 连续累计），未勾选通道显示“不测试”
 
 ### 检查 DUT Location ID
 
@@ -337,7 +378,8 @@ config 字段一览：
 system_profiler SPUSBDataType | grep -A 10 "FTDI\|USB-Serial\|CP210"
 ```
 
-或点击设置页的"可用 DUT 设备"按钮查看。
+或点击设置页的"可用 DUT 设备"按钮查看。  
+Windows 下该按钮会列出 `COMx` 与对应 `Location path`（如 `1-3.4`），可直接填入通道配置。
 
 ## 仪器
 

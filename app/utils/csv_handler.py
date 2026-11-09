@@ -7,6 +7,7 @@ import time
 from typing import Any
 
 from app.utils.constants import SITE
+from app.utils.paths import csv_dir
 
 _CSV_WRITE_LOCK = threading.Lock()
 
@@ -31,9 +32,9 @@ class CsvReport:
         self.upper_limit = upper_limit
         self.lower_limit = lower_limit
         self.unit_map = unit_map or {}
-        self.output_dir = output_dir  # 输出目录，为空则走旧路径
-        # 旧路径（兜底）
-        self.path = os.path.expanduser('~/Documents/AutoBench/Test_CSV')
+        self.output_dir = output_dir  # 输出目录，为空则使用设置里的数据保存路径
+        # 旧路径（兜底）改为可配置目录
+        self.path = str(csv_dir(create=False))
 
     def _filepath(self) -> str:
         """确定 CSV 文件路径。
